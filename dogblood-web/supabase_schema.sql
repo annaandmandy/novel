@@ -67,3 +67,20 @@ create policy "Allow all for productive_v1 chapters" on chapters for all using (
 create policy "Allow all for productive_v1 characters" on characters for all using (true);
 create policy "Allow all for productive_v1 memories" on memories for all using (true);
 create policy "Allow all for productive_v1 profiles" on profiles for all using (id = 'productive_v1');
+
+-- Create reading_progress table
+create table if not exists reading_progress (
+  id uuid default gen_random_uuid() primary key,
+  user_id text references profiles(id) not null,
+  novel_id uuid references novels(id) on delete cascade not null,
+  last_chapter_index integer default 1,
+  last_page_index integer default 0,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  unique(user_id, novel_id)
+);
+
+-- Enable RLS
+alter table reading_progress enable row level security;
+
+-- Policies
+create policy "Allow all for productive_v1 progress" on reading_progress for all using (user_id = 'productive_v1');

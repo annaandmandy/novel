@@ -64,7 +64,17 @@ export default function Reader() {
     useEffect(() => {
         fetchNovelData();
         fetchUserProfile();
+        fetchReadingProgress();
     }, [id]);
+
+    // Save Progress Effect (Debounced)
+    useEffect(() => {
+        if (!novel) return;
+        const timer = setTimeout(() => {
+            saveReadingProgress();
+        }, 1000); // Save after 1 second of no changes
+        return () => clearTimeout(timer);
+    }, [currentChapterIndex, currentPageIndex, novel]);
 
     // Auto-generation Effect
     useEffect(() => {
@@ -101,7 +111,10 @@ export default function Reader() {
 
             const { data: chaptersData } = await supabase.from('chapters').select('*').eq('novel_id', id).order('chapter_index', { ascending: true });
             setChapters(chaptersData);
-            setCurrentChapterIndex(chaptersData.length > 0 ? chaptersData.length - 1 : 0);
+            // Default to 0, will be overwritten by fetchReadingProgress if exists
+            if (chaptersData.length > 0 && currentChapterIndex === 0) {
+                // Keep 0 or wait for progress fetch
+            }
 
             fetchWikiData();
         } catch (error) {
@@ -117,6 +130,36 @@ export default function Reader() {
 
         const { data: memData } = await supabase.from('memories').select('*').eq('novel_id', id).order('created_at', { ascending: false });
         setMemories(memData || []);
+    };
+
+    const fetchReadingProgress = async () => {
+        if (!id) return;
+        const { data, error } = await supabase
+            .from('reading_progress')
+            .select('*')
+            .eq('novel_id', id)
+            .eq('user_id', 'productive_v1')
+            .single();
+
+        if (data) {
+            setCurrentChapterIndex(data.last_chapter_index || 0);
+            setCurrentPageIndex(data.last_page_index || 0);
+        }
+    };
+
+    const saveReadingProgress = async () => {
+        if (!id) return;
+        const { error } = await supabase
+            .from('reading_progress')
+            .upsert({
+                user_id: 'productive_v1',
+                novel_id: id,
+                last_chapter_index: currentChapterIndex,
+                last_page_index: currentPageIndex,
+                updated_at: new Date().toISOString()
+            }, { onConflict: 'user_id, novel_id' });
+
+        if (error) console.error("Error saving progress:", error);
     };
 
     const prefetchChapters = async () => {
