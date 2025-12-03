@@ -220,13 +220,26 @@ export default function Reader() {
             // C. Auto-update Characters
             if (aiResponse.character_updates?.length > 0) {
                 for (const update of aiResponse.character_updates) {
-                    const existingChar = characters.find(c => c.name.includes(update.name));
+                    // Improved matching: Check if name contains or is contained by existing name to handle partial matches
+                    // Also normalize by removing spaces to be safe
+                    const normalize = (str) => str.replace(/\s+/g, '');
+
+                    const existingChar = characters.find(c =>
+                        normalize(c.name) === normalize(update.name) ||
+                        normalize(c.name).includes(normalize(update.name)) ||
+                        normalize(update.name).includes(normalize(c.name))
+                    );
 
                     if (existingChar) {
                         // Append status with bullet point if different
                         let newStatus = existingChar.status;
                         if (update.status && update.status !== existingChar.status) {
-                            newStatus = `${existingChar.status} • ${update.status}`;
+                            // If status is just "Alive", don't append it if we already have a status
+                            if (update.status === 'Alive' && existingChar.status !== 'Alive') {
+                                // Do nothing, keep existing status
+                            } else {
+                                newStatus = `${existingChar.status} • ${update.status}`;
+                            }
                         }
 
                         updates.push(
@@ -238,12 +251,14 @@ export default function Reader() {
                                 .eq('id', existingChar.id)
                         );
                     } else {
+                        // Only insert if it's truly a new character (double check against current list to be safe)
+                        // And ensure status defaults to Alive if not provided or if it's just a role update
                         updates.push(
                             supabase.from('characters').insert({
                                 novel_id: novel.id,
                                 name: update.name,
                                 role: '配角',
-                                status: update.status,
+                                status: update.status || 'Alive',
                                 description: update.description_append || "新登場角色"
                             })
                         );
@@ -572,8 +587,8 @@ export default function Reader() {
                                         <div className="flex justify-between items-start">
                                             <div>
                                                 <h3 className="font-bold">{char.name} <span className="text-xs opacity-60 font-normal">({char.role})</span></h3>
-                                                <span className={`text-[10px] px-1.5 py-0.5 rounded ${char.status === 'Alive' ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'}`}>
-                                                    {char.status === 'Alive' ? '存活' : '死亡'}
+                                                <span className={`text-[10px] px-1.5 py-0.5 rounded ${char.status.includes('死') || char.status === 'Dead' ? 'bg-red-900/30 text-red-400' : 'bg-green-900/30 text-green-400'}`}>
+                                                    {char.status === 'Alive' ? '存活' : char.status}
                                                 </span>
                                             </div>
                                             <button onClick={() => handleDeleteCharacter(char.id)} className="opacity-60 hover:text-red-400">
