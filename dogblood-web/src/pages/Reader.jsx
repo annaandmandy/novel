@@ -220,49 +220,66 @@ export default function Reader() {
             // C. Auto-update Characters
             if (aiResponse.character_updates?.length > 0) {
                 for (const update of aiResponse.character_updates) {
-                    // Improved matching: Check if name contains or is contained by existing name to handle partial matches
-                    // Also normalize by removing spaces to be safe
-                    const normalize = (str) => str.replace(/\s+/g, '');
+                    // Use upsert to handle both insert and update in one atomic operation
+                    // We assume a unique constraint on (novel_id, name) in Supabase
 
+                    // First, try to find if we have a partial match locally to merge status
+                    // (This part is still useful for the "bullet point status" logic)
+                    const normalize = (str) => str.replace(/\s+/g, '');
                     const existingChar = characters.find(c =>
                         normalize(c.name) === normalize(update.name) ||
                         normalize(c.name).includes(normalize(update.name)) ||
                         normalize(update.name).includes(normalize(c.name))
                     );
 
-                    if (existingChar) {
-                        // Append status with bullet point if different
-                        let newStatus = existingChar.status;
-                        if (update.status && update.status !== existingChar.status) {
-                            // If status is just "Alive", don't append it if we already have a status
-                            if (update.status === 'Alive' && existingChar.status !== 'Alive') {
-                                // Do nothing, keep existing status
-                            } else {
-                                newStatus = `${existingChar.status} • ${update.status}`;
-                            }
-                        }
+                    let finalStatus = update.status || 'Alive';
+                    let finalDesc = update.description_append || "新登場角色";
+                    let finalName = update.name;
 
-                        updates.push(
-                            supabase.from('characters')
-                                .update({
-                                    status: newStatus,
-                                    description: existingChar.description + (update.description_append ? ` | ${update.description_append}` : "")
-                                })
-                                .eq('id', existingChar.id)
-                        );
-                    } else {
-                        // Only insert if it's truly a new character (double check against current list to be safe)
-                        // And ensure status defaults to Alive if not provided or if it's just a role update
-                        updates.push(
-                            supabase.from('characters').insert({
-                                novel_id: novel.id,
-                                name: update.name,
-                                role: '配角',
-                                status: update.status || 'Alive',
-                                description: update.description_append || "新登場角色"
-                            })
-                        );
+                    if (existingChar) {
+                        finalName = existingChar.name; // Keep original name
+                        finalDesc = existingChar.description + (update.description_append ? ` | ${update.description_append}` : "");
+
+                        if (update.status && update.status !== existingChar.status) {
+                            if (update.status === 'Alive' && existingChar.status !== 'Alive') {
+                                finalStatus = existingChar.status;
+                            } else {
+                                finalStatus = `${existingChar.status} • ${update.status}`;
+                            }
+                        } else {
+                            finalStatus = existingChar.status;
+                        }
                     }
+
+                    updates.push(
+                        supabase.from('characters').upsert({
+                            novel_id: novel.id,
+                            name: finalName,
+                            role: existingChar ? existingChar.role : '配角',
+                            status: finalStatus,
+                            description: finalDesc
+                        }, { onConflict: 'novel_id,name' }) // Ensure no spaces in column list
+                            .then(({ error }) => {
+                                if (error) throw error;
+                            })
+                            .catch(async (err) => {
+                                // Catch 409 Conflict (Duplicate Key) and fallback to Update
+                                if (err.code === '23505' || err.status === 409 || err.message?.includes('Conflict')) {
+                                    console.warn(`Upsert conflict for ${finalName}, falling back to UPDATE...`);
+                                    const { error: updateError } = await supabase.from('characters')
+                                        .update({
+                                            status: finalStatus,
+                                            description: finalDesc
+                                        })
+                                        .eq('novel_id', novel.id)
+                                        .eq('name', finalName);
+
+                                    if (updateError) console.error("Fallback update failed:", updateError);
+                                } else {
+                                    console.error("Character update failed:", err);
+                                }
+                            })
+                    );
                 }
                 // Re-fetch wiki data to sync UI
                 updates.push(fetchWikiData());
