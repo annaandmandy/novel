@@ -11,7 +11,25 @@ const genAI = new GoogleGenerativeAI(API_KEY);
 // Helper to get model - User requested specific model
 const getModel = (jsonMode = false) => genAI.getGenerativeModel({
     model: "gemini-2.5-flash-preview-09-2025",
-    generationConfig: jsonMode ? { responseMimeType: "application/json" } : {}
+    generationConfig: jsonMode ? { responseMimeType: "application/json" } : {},
+    safetySettings: [
+        {
+            category: "HARM_CATEGORY_HARASSMENT",
+            threshold: "BLOCK_NONE",
+        },
+        {
+            category: "HARM_CATEGORY_HATE_SPEECH",
+            threshold: "BLOCK_NONE",
+        },
+        {
+            category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            threshold: "BLOCK_NONE",
+        },
+        {
+            category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+            threshold: "BLOCK_NONE",
+        },
+    ],
 });
 
 /**
