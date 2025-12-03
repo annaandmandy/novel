@@ -20,7 +20,7 @@ const NavItem = ({ to, icon: Icon, label }) => (
 
 export default function Layout() {
     return (
-        <div className="flex flex-col h-screen bg-slate-950 text-slate-100 overflow-hidden">
+        <div className="flex flex-col h-screen bg-slate-950 text-slate-100 overflow-hidden pt-[env(safe-area-inset-top)]">
             {/* Main Content Area */}
             <main className="flex-1 overflow-y-auto pb-16 md:pb-0 md:pl-20">
                 <Outlet />

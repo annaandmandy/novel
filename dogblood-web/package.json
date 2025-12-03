@@ -10,6 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@capacitor/cli": "^7.4.4",
+    "@capacitor/core": "^7.4.4",
+    "@capacitor/ios": "^7.4.4",
     "@google/generative-ai": "^0.24.1",
     "@supabase/supabase-js": "^2.86.0",
     "clsx": "^2.1.1",
