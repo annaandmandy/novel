@@ -195,7 +195,8 @@ export default function Reader() {
                 memories,
                 novel.tags || [],
                 novel.settings?.tone,
-                novel.settings?.pov
+                novel.settings?.pov,
+                novel.settings?.plot_state // Pass lastPlotState
             );
 
             // 2. Handle DB Updates
@@ -306,6 +307,27 @@ export default function Reader() {
                 }
                 // Re-fetch wiki data to sync UI
                 updates.push(fetchWikiData());
+            }
+
+            // D. Update Plot State in Novel Settings
+            if (aiResponse.plot_state) {
+                const newSettings = {
+                    ...novel.settings,
+                    plot_state: aiResponse.plot_state
+                };
+
+                updates.push(
+                    supabase.from('novels')
+                        .update({ settings: newSettings })
+                        .eq('id', novel.id)
+                        .then(({ error }) => {
+                            if (error) console.error("Failed to update plot state:", error);
+                            else {
+                                // Update local state to reflect change immediately
+                                setNovel(prev => ({ ...prev, settings: newSettings }));
+                            }
+                        })
+                );
             }
 
             await Promise.all(updates);

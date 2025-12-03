@@ -180,6 +180,84 @@ const callOpenRouterPipeline = async (systemPrompt, userPrompt) => {
 };
 
 // ==========================================
+// 核心 Agent 函數群 (The AI Editorial Room)
+// ==========================================
+
+/**
+ * 🕵️ 策劃 Agent (The Planner)
+ * 負責根據「導演指令」與「設計圖」，生成具體的單章大綱與伏筆。
+ */
+const planChapter = async (director, blueprint, contextSummary) => {
+    const model = getGeminiModel(true); // JSON mode
+
+    const prompt = `
+    你是一位小說劇情策劃（Plot Architect）。
+    請根據【導演節奏】與【世界觀藍圖】，為下一章撰寫詳細的劇情大綱。
+    
+    【導演指令 (本章節奏)】
+    ${director.directive}
+    
+    【設計圖 (終極目標)】
+    ${blueprint}
+    
+    【前情提要】
+    ${contextSummary}
+    
+    【任務】
+    1. 思考如何將「設計圖」中的終極謎題拆解，在本章中埋下一個微小的伏筆或線索。
+    2. 設計本章的核心衝突點 (Conflict) 與解決方式 (Resolution)。
+    3. 規劃感情線的具體互動場景。
+    
+    請回傳 JSON:
+    {
+        "chapter_title": "本章暫定標題",
+        "outline": "詳細的劇情大綱 (約 200-300 字)，包含起承轉合。",
+        "key_clue": "本章需要揭露或埋下的關鍵線索 (若有)",
+        "romance_moment": "本章的感情高光時刻設計"
+    }
+    `;
+
+    try {
+        const result = await model.generateContent(prompt);
+        return cleanJson(result.response.text());
+    } catch (e) {
+        console.warn("Planning failed, falling back to direct writing.", e);
+        return null; // 失敗則回傳 null，讓 Writer 自己發揮
+    }
+};
+
+/**
+ * ✍️ 編輯 Agent (The Editor)
+ * 負責潤色初稿。
+ */
+const polishContent = async (draft, tone, pov) => {
+    const model = getGeminiModel(false); // Text mode
+
+    const editorPrompt = `
+    你是一位資深的網文主編。請對以下小說初稿進行【深度潤色】。
+    
+    【潤色目標：商業出版級別】
+    1. **去除 AI 感**：刪除重複的連接詞、過度生硬的心理獨白。
+    2. **增強畫面感**：Show, Don't Tell。
+    3. **風格強化**：
+       - ${tone === '爽文' ? '加強情緒煽動力，用詞要狠。' : ''}
+       - ${tone === '虐戀' ? '加強氛圍渲染，用詞要唯美揪心。' : ''}
+    
+    【注意】保留原有劇情，直接輸出潤色後的正文。
+    
+    [初稿內容]
+    ${draft}
+    `;
+
+    try {
+        const result = await model.generateContent(editorPrompt);
+        return result.response.text();
+    } catch (e) {
+        return draft;
+    }
+};
+
+// ==========================================
 // 1. 生成初始設定 (已更新：接收 targetChapterCount, category)
 // ==========================================
 export const generateRandomSettings = async (genre, tags = [], tone = "一般", targetChapterCount = null, category = "BG") => {
@@ -600,13 +678,15 @@ const determinePlotDirectives = (currentChapterIndex, lastPlotState, genre, tags
 // 3. 生成下一章
 // ==========================================
 export const generateNextChapter = async (novelContext, previousContent, characters = [], memories = [], tags = [], tone = "一般", pov = "女主", lastPlotState = null) => {
-    // 預設章節數邏輯：優先使用 novelContext.targetEndingChapter，若無則根據 Genre 自動判斷
     const totalChapters = novelContext.targetEndingChapter || getRecommendedTotalChapters(novelContext.genre);
 
+    // 1. Director (Logic)
     const director = determinePlotDirectives(novelContext.currentChapterIndex, lastPlotState, novelContext.genre, tags, totalChapters);
+
     const toneDesc = getToneInstruction(tone);
     const povDesc = getPovInstruction(pov);
     const styleGuide = `類型：${novelContext.genre} | 風格標籤：${tags.join('、')}。\n${toneDesc}\n${povDesc}`;
+    const blueprintStr = JSON.stringify(novelContext.design_blueprint || {});
 
     const charText = characters.map(c => {
         const profile = typeof c.profile === 'string' ? JSON.parse(c.profile) : c.profile;
@@ -615,7 +695,16 @@ export const generateNextChapter = async (novelContext, previousContent, charact
     }).join('\n');
 
     const memText = memories.slice(0, 15).map(m => `- ${m.content}`).join('\n');
-    const blueprint = JSON.stringify(novelContext.design_blueprint || {});
+    const prevText = previousContent.slice(-1500);
+
+    // 2. Planner (Creative Agent)
+    console.log("🧠 Planner Agent is working...");
+    const chapterPlan = await planChapter(director, blueprintStr, prevText);
+
+    // 如果策劃成功，將大綱注入 Prompt；如果失敗，則僅使用導演指令
+    const outlineContext = chapterPlan ?
+        `【本章劇情大綱 (由策劃 Agent 提供)】\n標題：${chapterPlan.chapter_title}\n大綱：${chapterPlan.outline}\n關鍵線索：${chapterPlan.key_clue}\n感情高光：${chapterPlan.romance_moment}` :
+        "";
 
     // 結局倒數邏輯
     let endingInstruction = "";
@@ -632,12 +721,14 @@ export const generateNextChapter = async (novelContext, previousContent, charact
     當前卷名/副本：${director.arcName}
     
     【設計圖 (導航)】
-    ${blueprint}
+    ${blueprintStr}
     (寫作時請時刻記得「終極目標」與「世界真相」，確保劇情不跑偏)
 
-    【本章導演指令 (重要)】
+    【本章導演指令 (邏輯層)】
     ${director.directive}
     ${endingInstruction}
+    
+    ${outlineContext}
     
     【鏡頭語言要求】
     敘事時請自然融入「電影分鏡感」，包含：
@@ -659,7 +750,7 @@ export const generateNextChapter = async (novelContext, previousContent, charact
     【上下文】
     記憶庫：${memText}
     角色狀態：${charText}
-    前文摘要：${previousContent.slice(-1500)}
+    前文摘要：${prevText}
 
     【回傳 JSON】
     {
@@ -682,10 +773,21 @@ export const generateNextChapter = async (novelContext, previousContent, charact
     `;
 
     try {
+        // 3. Writer (Gemini)
         const geminiModel = getGeminiModel(true);
         const geminiPrompt = baseSystemPrompt + "\n" + geminiUserPrompt + `\n 回傳 JSON Schema 請包含 plot_state`;
         const result = await geminiModel.generateContent(geminiPrompt);
-        return cleanJson(result.response.text());
+        const jsonResponse = cleanJson(result.response.text());
+
+        // 4. Editor (Gemini - Text Mode)
+        // 只有當生成成功且內容充足時才進行潤色，避免浪費 Token 或破壞格式
+        if (jsonResponse.content && jsonResponse.content.length > 500) {
+            console.log("✍️ Editor Agent is polishing Chapter...");
+            const polishedContent = await polishContent(jsonResponse.content, tone, pov);
+            jsonResponse.content = polishedContent;
+        }
+
+        return jsonResponse;
 
     } catch (error) {
         if (isGeminiBlockedError(error)) {
