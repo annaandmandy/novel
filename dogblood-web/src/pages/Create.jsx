@@ -5,7 +5,7 @@ import {
     Infinity, VenetianMask, CloudLightning, Skull, Crown, Heart,
     Zap, Smile, Scale, Moon, Coffee
 } from 'lucide-react';
-import { generateNovelStart, generateRandomSettings } from '../lib/gemini';
+import { generateNovelStart, generateRandomSettings, getRecommendedTotalChapters } from '../lib/gemini';
 import { supabase } from '../lib/supabase';
 
 export default function Create() {
@@ -111,8 +111,8 @@ export default function Create() {
     const handleRandomize = async () => {
         setLoadingRandom(true);
         try {
-            // Updated signature: generateRandomSettings(genre, tags, tone)
-            const randomSettings = await generateRandomSettings(genre, selectedTags, tone);
+            // Updated signature: generateRandomSettings(genre, tags, tone, targetChapterCount)
+            const randomSettings = await generateRandomSettings(genre, selectedTags, tone, parseInt(targetEndingChapter));
 
             // Separate flat settings for UI and deep profiles for logic
             setSettings({
@@ -161,7 +161,10 @@ export default function Create() {
 
             // Updated signature: generateNovelStart(genre, settings, tags, tone, pov)
             // Note: We must pass the specific genre (e.g. '無限流') not the category ('BG')
-            const content = await generateNovelStart(genre, apiSettings, selectedTags, tone, pov);
+            const startResponse = await generateNovelStart(genre, apiSettings, selectedTags, tone, pov);
+            const content = startResponse.content;
+            // Note: startResponse.character_updates is also available here if we want to use it dynamically,
+            // but for now we use the pre-generated profiles for the main characters.
 
             // 2. Save Novel to Supabase
             const { data: novel, error: novelError } = await supabase
@@ -278,7 +281,10 @@ export default function Create() {
                         {GENRE_OPTIONS.map((opt) => (
                             <button
                                 key={opt.id}
-                                onClick={() => setGenre(opt.id)}
+                                onClick={() => {
+                                    setGenre(opt.id);
+                                    setTargetEndingChapter(getRecommendedTotalChapters(opt.id));
+                                }}
                                 className={`p-4 rounded-xl border-2 text-left transition-all relative overflow-hidden group ${genre === opt.id
                                     ? 'border-purple-500 bg-purple-500/10 shadow-[0_0_20px_rgba(168,85,247,0.2)]'
                                     : 'border-slate-800 bg-slate-900/50 hover:border-slate-700'

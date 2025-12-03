@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { ChevronLeft, Info, Settings, Share, BookOpen, X, Trash2, Plus, Edit2, AlertTriangle, Type, Palette, List } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { generateNextChapter } from '../lib/gemini';
+import ReactMarkdown from 'react-markdown';
 
 
 
@@ -428,12 +429,32 @@ export default function Reader() {
                         {currentPageIndex === 0 && (
                             <h2 className="text-2xl font-bold mb-6 opacity-90 inline-block w-full">{currentChapter.title}</h2>
                         )}
-                        <p
-                            className="whitespace-pre-line text-justify inline"
-                            style={{ fontSize: `${preferences.fontSize}px`, lineHeight: '1.8' }}
-                        >
-                            {currentChapter.content?.trim()}
-                        </p>
+                        <div style={{ fontSize: `${preferences.fontSize}px`, lineHeight: '1.8' }}>
+                            <ReactMarkdown
+                                components={{
+                                    p: ({ node, ...props }) => <p className="mb-4 text-justify whitespace-pre-wrap" {...props} />,
+                                    h1: ({ node, ...props }) => <h1 className="text-xl font-bold mt-6 mb-4" {...props} />,
+                                    h2: ({ node, ...props }) => <h2 className="text-lg font-bold mt-5 mb-3" {...props} />,
+                                    h3: ({ node, ...props }) => <h3 className="text-base font-bold mt-4 mb-2" {...props} />,
+                                    strong: ({ node, ...props }) => <strong className="font-bold opacity-100" {...props} />,
+                                    em: ({ node, ...props }) => <em className="italic opacity-90" {...props} />,
+                                }}
+                            >
+                                {(() => {
+                                    let text = currentChapter.content?.trim() || '';
+                                    // Fix: Handle cases where JSON was saved directly to DB
+                                    if (text.startsWith('{') && text.includes('"content"')) {
+                                        try {
+                                            const parsed = JSON.parse(text);
+                                            if (parsed.content) text = parsed.content;
+                                        } catch (e) { console.warn("Failed to parse JSON content", e); }
+                                    }
+                                    // Fix: Ensure literal \n strings are converted to newlines if escaped
+                                    text = text.replace(/\\n/g, '\n');
+                                    return text;
+                                })()}
+                            </ReactMarkdown>
+                        </div>
                     </div>
                 </div>
 
