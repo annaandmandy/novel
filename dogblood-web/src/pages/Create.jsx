@@ -16,7 +16,7 @@ export default function Create() {
     const [genre, setGenre] = useState('豪門宮鬥');
     const [pov, setPov] = useState('第三人稱');
     const [tone, setTone] = useState('爽文');
-    const [selectedTags, setSelectedTags] = useState(['']);
+    const [selectedTags, setSelectedTags] = useState([]);
 
     const [settings, setSettings] = useState({
         title: '',
