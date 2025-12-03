@@ -233,19 +233,15 @@ export default function Reader() {
                     );
 
                     let finalStatus = update.status || 'Alive';
-                    let finalDesc = update.description_append || "新登場角色";
+                    let finalDesc = update.description || update.description_append || "新登場角色";
                     let finalName = update.name;
 
                     if (existingChar) {
                         finalName = existingChar.name; // Keep original name
                         finalDesc = existingChar.description + (update.description_append ? ` | ${update.description_append}` : "");
 
-                        if (update.status && update.status !== existingChar.status) {
-                            if (update.status === 'Alive' && existingChar.status !== 'Alive') {
-                                finalStatus = existingChar.status;
-                            } else {
-                                finalStatus = `${existingChar.status} • ${update.status}`;
-                            }
+                        if (update.status) {
+                            finalStatus = update.status;
                         } else {
                             finalStatus = existingChar.status;
                         }

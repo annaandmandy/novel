@@ -336,6 +336,9 @@ export const generateNextChapter = async (novelContext, previousContent, charact
     2. 動態引入配角。
     3. JSON格式回傳: content, new_memories, character_updates。
     4. 內容需包含張力與衝突。
+    5. **角色更新**：
+       - **新角色**：請提供 \`name\`, \`description\` (完整介紹), \`status\` (簡短)。
+       - **既有角色**：請提供 \`name\`, \`description_append\` (新增事蹟), \`status\` (簡短)。
     `;
 
     // --- STRATEGY: Try Gemini First ---
@@ -343,7 +346,7 @@ export const generateNextChapter = async (novelContext, previousContent, charact
         const geminiModel = getGeminiModel(true);
 
         // Gemini Prompt Construction (Standard)
-        const geminiPrompt = baseSystemPrompt + "\n" + userPrompt + `\n 回傳 JSON Schema: { "content": "...", "new_memories": [], "character_updates": [] }`;
+        const geminiPrompt = baseSystemPrompt + "\n" + userPrompt + `\n 回傳 JSON Schema: { "content": "...", "new_memories": ["重要事件摘要"], "character_updates": [{ "name": "角色名", "status": "狀態", "description": "新角色介紹", "description_append": "既有角色更新" }] }`;
 
         const result = await geminiModel.generateContent(geminiPrompt);
         const response = await result.response;
