@@ -1,35 +1,202 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 
-const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const GEMINI_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const OPENROUTER_KEY = import.meta.env.VITE_OPENROUTER_API_KEY;
+const SITE_URL = "http://localhost:5173";
+const SITE_NAME = "DogBlood AI";
 
-if (!API_KEY) {
-    console.error("Missing VITE_GEMINI_API_KEY in .env file");
-}
+// --- Client 1: Google Gemini (Primary) ---
+const genAI = new GoogleGenerativeAI(GEMINI_KEY);
+const safetySettings = [
+    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+];
 
-const genAI = new GoogleGenerativeAI(API_KEY);
+// --- Client 2: OpenRouter (Fallback) ---
+// Use Magnum v4 (Anthracite) - Excellent for creative writing
+const FALLBACK_MODEL = "anthracite-org/magnum-v4-72b";
 
-// Helper to get model - User requested specific model
-const getModel = (jsonMode = false) => genAI.getGenerativeModel({
+const cleanJson = (text) => {
+    try {
+        // 1. Basic Markdown cleanup
+        let cleaned = text.replace(/```json/g, '').replace(/```/g, '').trim();
+
+        // 2. Aggressive cleanup for common JSON issues from LLMs
+        // Ensure we only parse the content between the first { and last }
+        const firstOpen = cleaned.indexOf('{');
+        const lastClose = cleaned.lastIndexOf('}');
+        if (firstOpen !== -1 && lastClose !== -1) {
+            cleaned = cleaned.substring(firstOpen, lastClose + 1);
+        }
+
+        return JSON.parse(cleaned);
+    } catch (e) {
+        console.warn("Standard JSON parse failed, attempting regex repair...");
+        throw e;
+    }
+};
+
+/**
+ * Helper: Translate text to Traditional Chinese using OpenRouter (Magnum) to avoid safety blocks
+ */
+const translateToChinese = async (text) => {
+    console.log("Translating content to Traditional Chinese (using OpenRouter)...");
+
+    const prompt = `
+    You are a professional translator. Translate the following English novel text into fluent, beautiful Traditional Chinese (繁體中文).
+    Maintain the original tone, style, and tension.
+    Output ONLY the translated text.
+    
+    [Source Text]
+    ${text}
+    `;
+
+    try {
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${OPENROUTER_KEY}`,
+                "HTTP-Referer": SITE_URL,
+                "X-Title": SITE_NAME,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                "model": FALLBACK_MODEL, // Use Magnum for translation too
+                "messages": [
+                    { "role": "user", "content": prompt }
+                ],
+                "temperature": 0.3 // Lower temperature for translation accuracy
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Translation API Error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data.choices[0].message.content;
+    } catch (error) {
+        console.error("Translation error:", error);
+        throw error;
+    }
+};
+
+/**
+ * Helper: Call OpenRouter Pipeline (English Gen -> Chinese Trans)
+ */
+const callOpenRouterPipeline = async (systemPrompt, userPrompt) => {
+    if (!OPENROUTER_KEY) throw new Error("OpenRouter API Key not configured for fallback.");
+
+    // Step 1: Generate in English (High Stability)
+    console.log(`⚠️ Triggering Fallback: Generating in English with ${FALLBACK_MODEL}...`);
+
+    const englishInstruction = "IMPORTANT: Write the story in ENGLISH. Do not use Chinese yet. Focus on high-quality prose and tension.";
+
+    try {
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${OPENROUTER_KEY}`,
+                "HTTP-Referer": SITE_URL,
+                "X-Title": SITE_NAME,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                "model": FALLBACK_MODEL,
+                "messages": [
+                    { "role": "system", "content": systemPrompt + "\n" + englishInstruction },
+                    { "role": "user", "content": userPrompt }
+                ],
+                "temperature": 0.8
+            })
+        });
+
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`OpenRouter API Error: ${response.status} - ${errText}`);
+        }
+
+        const data = await response.json();
+        const englishText = data.choices[0].message.content;
+
+        // Step 2: Translate to Chinese
+        try {
+            const chineseText = await translateToChinese(englishText);
+            return chineseText;
+        } catch (transError) {
+            console.error("Translation failed, returning English text:", transError);
+            return englishText + "\n\n(系統提示：翻譯服務暫時不可用，以上為原文)";
+        }
+
+    } catch (error) {
+        console.error("OpenRouter Pipeline Failed:", error);
+        throw error;
+    }
+};
+
+/**
+ * Helper: Call OpenRouter (Using native fetch)
+ */
+const callOpenRouter = async (systemPrompt, userPrompt, jsonMode = false) => {
+    if (!OPENROUTER_KEY) throw new Error("OpenRouter API Key not configured for fallback.");
+    console.log(`⚠️ Triggering Fallback: Switching to ${FALLBACK_MODEL}...`);
+
+    // Magnum understands instructions well, but emphasizing Chinese is still good practice.
+    const languageInstruction = "Strictly write in Traditional Chinese (繁體中文). Do not use English.";
+
+    try {
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${OPENROUTER_KEY}`,
+                "HTTP-Referer": SITE_URL,
+                "X-Title": SITE_NAME,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                "model": FALLBACK_MODEL,
+                "messages": [
+                    { "role": "system", "content": systemPrompt + "\n" + languageInstruction },
+                    { "role": "user", "content": userPrompt }
+                ]
+            })
+        });
+
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`OpenRouter API Error: ${response.status} - ${errText}`);
+        }
+
+        const data = await response.json();
+        const text = data.choices[0].message.content;
+
+        if (jsonMode) {
+            try {
+                return cleanJson(text);
+            } catch (e) {
+                console.error("JSON Repair Failed, returning raw content wrapped.");
+                // ⭐️ Ultimate Fallback: Return raw text wrapped as valid object
+                return {
+                    content: text,
+                    new_memories: [],
+                    character_updates: []
+                };
+            }
+        }
+        return text;
+    } catch (error) {
+        console.error("OpenRouter API Call Failed:", error);
+        throw error;
+    }
+};
+
+// Helper to get Gemini model
+const getGeminiModel = (jsonMode = false) => genAI.getGenerativeModel({
     model: "gemini-2.5-flash-preview-09-2025",
+    safetySettings: safetySettings,
     generationConfig: jsonMode ? { responseMimeType: "application/json" } : {},
-    safetySettings: [
-        {
-            category: "HARM_CATEGORY_HARASSMENT",
-            threshold: "BLOCK_NONE",
-        },
-        {
-            category: "HARM_CATEGORY_HATE_SPEECH",
-            threshold: "BLOCK_NONE",
-        },
-        {
-            category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-            threshold: "BLOCK_NONE",
-        },
-        {
-            category: "HARM_CATEGORY_DANGEROUS_CONTENT",
-            threshold: "BLOCK_NONE",
-        },
-    ],
 });
 
 /**
@@ -40,7 +207,7 @@ const getModel = (jsonMode = false) => genAI.getGenerativeModel({
  * 3. 摘要要求寫成「文案」風格，而非百科全書風格。
  */
 export const generateRandomSettings = async (genre, tags = []) => {
-    const model = getModel(true); // 使用 JSON Mode
+    const model = getGeminiModel(true); // 使用 JSON Mode
 
     // 構建風格描述
     const styleGuide = tags.length > 0 ? `用戶偏好風格：${tags.join('、')}。` : "";
@@ -94,7 +261,9 @@ export const generateRandomSettings = async (genre, tags = []) => {
  * 3. 引入功能性配角。
  */
 export const generateNovelStart = async (genre, settings, tags = []) => {
-    const model = getModel(false); // 第一章回傳純文本，讓 AI 自由發揮
+    // For start generation, we also try Gemini first, but usually it's safer.
+    // If needed, we can implement the same fallback logic here.
+    const model = getGeminiModel(false);
 
     const styleGuide = tags.length > 0 ? `風格標籤：${tags.join('、')} (請務必遵守此基調)。` : "";
     const toneInstruction = genre === 'BL'
@@ -136,88 +305,80 @@ export const generateNovelStart = async (genre, settings, tags = []) => {
 };
 
 /**
- * 生成下一章
- * 優化點：
- * 1. **角色保護機制**：防止隨機發便當。
- * 2. **動態世界觀**：根據劇情進度引入新角色。
- * 3. **節奏控制**：要求 AI 識別當前是「鋪墊期」還是「高潮期」。
+ * Generate Next Chapter (Hybrid)
  */
 export const generateNextChapter = async (novelContext, previousContent, characters = [], memories = [], tags = []) => {
-    const model = getModel(true); // JSON Mode
-
+    // 1. Prepare Data
     const charText = characters.map(c => `- ${c.name} (${c.role}): ${c.description} [狀態: ${c.status}]`).join('\n');
-    // 取最近的 15 條記憶，避免 Context 溢出，但保留關鍵資訊
     const memText = memories.slice(0, 15).map(m => `- ${m.content}`).join('\n');
     const styleGuide = tags.length > 0 ? `風格標籤：${tags.join('、')}` : "";
 
-    // 結局判定邏輯
     let endingInstruction = "";
     if (novelContext.targetEndingChapter) {
-        const chaptersLeft = novelContext.targetEndingChapter - novelContext.currentChapterIndex;
-        if (chaptersLeft <= 3 && chaptersLeft > 0) {
-            endingInstruction = `【結局倒數】還有 ${chaptersLeft} 章完結。請開始收束所有伏筆，劇情進入最終高潮。`;
-        } else if (chaptersLeft <= 0) {
-            endingInstruction = `【大結局】這是最後一章！請給出一個情感飽滿、邏輯自洽的結局，回應開篇的伏筆。`;
-        }
+        const left = novelContext.targetEndingChapter - novelContext.currentChapterIndex;
+        if (left <= 3 && left > 0) endingInstruction = `【結局倒數】還有 ${left} 章完結。請開始收束所有伏筆，劇情進入最終高潮。`;
+        else if (left <= 0) endingInstruction = `【大結局】這是最後一章！請給出一個情感飽滿、邏輯自洽的結局，回應開篇的伏筆。`;
     }
 
-    const prompt = `
-    你是一名網文小說家。請撰寫下一章（第 ${novelContext.currentChapterIndex + 1} 章），並維護世界觀數據。
+    const baseSystemPrompt = `你是一名專業的小說家。請撰寫下一章並維護世界觀數據。`;
 
-    【當前狀態】
-    - 小說：${novelContext.title} (${novelContext.trope})
-    - 主角：${novelContext.protagonist}
-    - ${styleGuide}
+    const userPrompt = `
+    小說：${novelContext.title} (${novelContext.trope})
+    ${styleGuide}
     ${endingInstruction}
 
-    【記憶庫 (Memory)】
-    ${memText || "暫無記憶"}
+    記憶庫：${memText}
+    角色：${charText}
+    前文：${previousContent.slice(-2000)}
 
-    【角色列表 (Wiki)】
-    ${charText || "暫無角色資料"}
+    【任務】
+    1. 承接劇情，邏輯連貫。
+    2. 動態引入配角。
+    3. JSON格式回傳: content, new_memories, character_updates。
+    4. 內容需包含張力與衝突。
+    `;
 
-    【上一章內容 (Context)】
-    ${previousContent.slice(-2500)}
-
-    【寫作任務要求】
-    1. **劇情推進**：承接上文，邏輯連貫。請在每一章安排一個「小高潮」或「懸念鉤子」(Cliffhanger) 在結尾。
-    2. **角色保護機制 (重要)**：
-       - **嚴禁隨意寫死重要角色**。除非劇情進入重大轉折點（大高潮）且邏輯上避無可避，否則主要配角和主角不得死亡。
-       - 如果是「重生文」且目前是回憶殺，則允許死亡描述。
-       - 一般情況下，請使用「重傷、失蹤、昏迷、被俘」代替直接死亡，保留後續劇情彈性。
-    3. **動態配角引入**：
-       - 只有在劇情轉換地圖或發生新事件時，才自然引入新角色（如：新副本的引路人、新反派）。
-       - 請務必賦予新角色獨特的說話方式或外貌特徵，不要寫成大眾臉。
-    4. **互動與對話**：增加角色間的對話互動，通過對話推動劇情，減少大段的心理獨白。
-
-    【數據維護要求 (JSON)】
-    1. **狀態偵測**：偵測角色是否受傷、升級、中毒、獲得道具。
-    2. **稱號變更**：若角色獲得新身分（如登基、晉升），請更新 status，**不要**視為新角色。
-    3. **識別規則**：更新角色時，'name' 欄位必須使用**原名**。
-    4. **記憶寫入**：只記錄對後續劇情有影響的關鍵事件（獲得關鍵道具、得知驚天秘密、重要關係突破）。
-
-    【JSON Schema】
-    {
-      "content": "小說內文 (約1200-1500字)...",
-      "new_memories": ["關鍵事件1", "關鍵事件2"],
-      "character_updates": [
-        { "name": "主角原名", "status": "重傷", "description_append": "被反派偷襲，經脈受損" },
-        { "name": "新角色名", "status": "初登場", "description_append": "神秘的黑衣人，似乎認識主角" }
-      ]
-    }
-  `;
-
+    // --- STRATEGY: Try Gemini First ---
     try {
-        const result = await model.generateContent(prompt);
+        const geminiModel = getGeminiModel(true);
+
+        // Gemini Prompt Construction (Standard)
+        const geminiPrompt = baseSystemPrompt + "\n" + userPrompt + `\n 回傳 JSON Schema: { "content": "...", "new_memories": [], "character_updates": [] }`;
+
+        const result = await geminiModel.generateContent(geminiPrompt);
         const response = await result.response;
         const text = response.text();
-        // 雙重保險清理 JSON
         const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
         return JSON.parse(jsonStr);
+
     } catch (error) {
-        console.error("Error generating next chapter:", error);
-        // 如果 JSON 解析失敗，通常是因為模型輸出了額外文字，這裡可以做更高級的 Error Recovery
-        // 目前先拋出錯誤讓前端處理重試
-        throw new Error("AI 生成格式錯誤，請重試");
+        const errStr = error.toString();
+        console.warn("Gemini Error:", errStr);
+
+        // Catch Safety errors, Empty output errors (blocked), and 400s
+        if (errStr.includes("PROHIBITED_CONTENT") ||
+            errStr.includes("Safety") ||
+            errStr.includes("400") ||
+            errStr.includes("model output must contain") ||
+            errStr.includes("Candidate was blocked")) {
+
+            console.log("🚀 Fallback: Switching to English Gen + Translation Pipeline...");
+
+            try {
+                // Generate Text in English -> Translate to Chinese
+                const chineseContent = await callOpenRouterPipeline(baseSystemPrompt, userPrompt);
+
+                // Return wrapped object (Skipping wiki updates to ensure stability)
+                return {
+                    content: chineseContent,
+                    new_memories: [],
+                    character_updates: []
+                };
+            } catch (fbError) {
+                console.error("Pipeline Generation Failed:", fbError);
+                throw new Error("系統暫時無法生成內容，請稍後再試。");
+            }
+        }
+        throw error;
     }
 };
