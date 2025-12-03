@@ -185,13 +185,16 @@ export default function Reader() {
             const aiResponse = await generateNextChapter(
                 {
                     ...novel.settings,
+                    genre: novel.genre,
                     targetEndingChapter: novel.target_ending_chapter,
                     currentChapterIndex: lastChapter.chapter_index
                 },
                 lastChapter.content,
                 characters,
                 memories,
-                novel.tags || []
+                novel.tags || [],
+                novel.settings?.tone,
+                novel.settings?.pov
             );
 
             // 2. Handle DB Updates
