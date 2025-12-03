@@ -11,8 +11,15 @@ export default function NovelDetail() {
     const [characters, setCharacters] = useState([]);
     const [loading, setLoading] = useState(true);
 
+    const [readingProgress, setReadingProgress] = useState(null);
+
     useEffect(() => {
         fetchData();
+        // Fetch reading progress from localStorage
+        const savedProgress = localStorage.getItem(`novel_progress_${id}`);
+        if (savedProgress) {
+            setReadingProgress(JSON.parse(savedProgress));
+        }
     }, [id]);
 
     const fetchData = async () => {
@@ -97,6 +104,8 @@ export default function NovelDetail() {
     const protagonist = characters.find(c => c.role === '主角') || { name: novel.settings?.protagonist || '未知' };
     const loveInterest = characters.find(c => c.role === '對象/反派') || { name: novel.settings?.loveInterest || '未知' };
 
+    const actionButtonText = readingProgress ? `繼續閱讀 (第 ${readingProgress.chapterIndex} 章)` : (chapters.length > 0 ? "開始閱讀" : "開始創作");
+
     return (
         <div className="min-h-screen bg-slate-950 pb-20">
             {/* Header */}
@@ -146,6 +155,11 @@ export default function NovelDetail() {
                                     </span>
                                 ))}
                             </div>
+                            {readingProgress && (
+                                <div className="text-sm text-purple-400 font-medium mb-2">
+                                    上次讀到：第 {readingProgress.chapterIndex} 章
+                                </div>
+                            )}
                         </div>
 
                         <div className="grid grid-cols-2 gap-4">
@@ -183,7 +197,7 @@ export default function NovelDetail() {
                                 className="inline-flex items-center gap-2 px-8 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-full font-bold transition-all shadow-lg shadow-purple-900/20"
                             >
                                 <Play size={20} fill="currentColor" />
-                                {chapters.length > 0 ? "開始閱讀" : "開始創作"}
+                                {actionButtonText}
                             </Link>
                         </div>
                     </div>
@@ -224,13 +238,13 @@ export default function NovelDetail() {
             </div>
 
             {/* Mobile Floating Action Button */}
-            <div className="md:hidden fixed bottom-6 left-0 right-0 px-6 flex justify-center z-20">
+            <div className="md:hidden fixed bottom-24 left-0 right-0 px-6 flex justify-center z-20">
                 <Link
                     to={`/read/${novel.id}`}
                     className="w-full max-w-sm flex items-center justify-center gap-2 px-8 py-4 bg-purple-600 text-white rounded-full font-bold shadow-xl shadow-purple-900/40"
                 >
                     <Play size={20} fill="currentColor" />
-                    {chapters.length > 0 ? "開始閱讀" : "開始創作"}
+                    {actionButtonText}
                 </Link>
             </div>
         </div>

@@ -1,3 +1,4 @@
+// ... (Imports and client init remain the same)
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 import OpenAI from "openai";
 
@@ -152,6 +153,16 @@ const getGeminiModel = (jsonMode = false) => genAI.getGenerativeModel({
 });
 
 // ... (generateRandomSettings - 保持不變) ...
+const isGeminiBlockedError = (error) => {
+    const errStr = (error.message || error.toString()).toLowerCase();
+    return errStr.includes("prohibited") ||
+        errStr.includes("safety") ||
+        errStr.includes("model output must contain") ||
+        errStr.includes("candidate was blocked") ||
+        errStr.includes("400");
+};
+
+// ... (generateRandomSettings - 保持不變) ...
 export const generateRandomSettings = async (genre, tags = [], tone = "一般") => {
     const model = getGeminiModel(true);
     const toneDesc = getToneInstruction(tone);
@@ -207,6 +218,7 @@ export const generateNovelStart = async (genre, settings, tags = [], tone = "一
     else if (genre === "都市情緣") extraInstruction = "第一章重點：描寫主角與對象的初次相遇或重逢。氛圍要充滿曖昧、誤會或戲劇性。";
 
     if (tags.includes("重生")) extraInstruction += " (需描寫前世慘死與重生後的震驚)";
+    if (tags.includes("馬甲")) extraInstruction += " (需強調主角隱藏身分的謹慎與對周圍的不信任)";
 
     const systemPrompt = `你是一名專業小說家。請撰寫第一章。繁體中文。`;
     const userPrompt = `
@@ -220,8 +232,7 @@ export const generateNovelStart = async (genre, settings, tags = [], tone = "一
         const result = await model.generateContent(systemPrompt + "\n" + userPrompt);
         return result.response.text();
     } catch (error) {
-        const errStr = error.toString();
-        if (errStr.includes("PROHIBITED") || errStr.includes("Safety") || errStr.includes("model output must contain")) {
+        if (isGeminiBlockedError(error)) {
             return await callOpenRouterPipeline(systemPrompt, userPrompt);
         }
         throw error;
@@ -229,13 +240,15 @@ export const generateNovelStart = async (genre, settings, tags = [], tone = "一
 };
 
 /**
- * 劇情狀態管理器 - V13 感情線波折版
- * 修正感情線邏輯：感情不只會上升，在特定階段（衝突期）會強制下降/冰點。
+ * 劇情狀態管理器 - V15 全局馬甲版
+ * 修正：移除 Genre 的提早 return，改為疊加指令。
+ * 讓「馬甲 (Hidden Identity)」與「感情 (Romance)」成為所有 Genre 的通用插件。
  */
 const determinePlotDirectives = (currentChapterIndex, lastPlotState, genre, tags) => {
     // 輔助檢查 Tags
     const hasTag = (t) => tags.some(tag => tag.includes(t));
     const isAngst = hasTag("虐戀") || hasTag("追妻");
+    const hasSecretIdentity = hasTag("馬甲") || hasTag("掉馬") || hasTag("臥底") || hasTag("隱藏身分");
 
     // 設定一個循環 (Arc) 為 40 章
     const ARC_LENGTH = 40;
@@ -248,7 +261,7 @@ const determinePlotDirectives = (currentChapterIndex, lastPlotState, genre, tags
     let romanceBeat = "";
     let arcName = (cyclePos === 1) ? `第${cycleNum}卷` : (lastPlotState?.arcName || `第${cycleNum}卷`);
 
-    // --- 🌍 世界觀/難度升級指令 ---
+    // --- 🌍 1. 世界觀/難度升級 (Global Scale) ---
     let scaleInstruction = "";
     if (cycleNum === 1) {
         scaleInstruction = "【當前格局：新手/開局】危機主要圍繞在主角個人生存或小團體利益。敵人等級較低，主角能力尚在成長中。";
@@ -258,54 +271,43 @@ const determinePlotDirectives = (currentChapterIndex, lastPlotState, genre, tags
         scaleInstruction = `【當前格局：頂級/世界級 (第${cycleNum}層級)】危機涉及世界存亡、位面規則、跨國陰謀或神明領域。主角已是強者/大佬，一舉一動影響大局。`;
     }
 
-    // --- ❤️ 感情線節奏 (Global Romance Arc) ---
-    // 感情不只是升溫，還包含試探、危機與修復。
+    // --- ❤️ 2. 感情線節奏 (Global Romance Arc) ---
+    // 強制所有類型都要跑這個節奏
     if (cyclePos <= 5) {
-        romanceBeat = "【感情：初遇/磨合/新階段的距離感】兩人尚在適應新環境或新關係。可能存在試探、不信任或微妙的距離。";
+        romanceBeat = "【感情：初遇/新階段的試探】描寫兩人互相靠近但又因秘密而產生的微妙距離感。眼神拉絲但言語克制。";
     } else if (cyclePos <= 20) {
-        romanceBeat = "【感情：升溫與互動】透過共同經歷事件，好感度上升。默契增加，肢體接觸自然化。";
+        romanceBeat = "【感情：升溫與曖昧】在共同經歷事件中產生默契。不經意的肢體接觸，或是為了掩護對方而做出的親密舉動。";
     } else if (cyclePos <= 35) {
-        // 進入高潮前的壓力區，感情面臨考驗 (感情值可能下降/波動)
-        if (isAngst) {
+        // --- 危機期判定 ---
+        if (hasSecretIdentity) {
+            romanceBeat = "【感情：身分危機/猜忌】對方發現了主角的破綻(關於馬甲)，開始產生懷疑。主角為了圓謊不得不撒新的謊，內心煎熬。信任感面臨崩塌邊緣。";
+        } else if (isAngst) {
             romanceBeat = "【感情：冰點/決裂/誤會爆發】矛盾激化，好感度看似觸底。互相折磨，心口不一。這是一段「感情值下降」的虐心劇情。";
-        } else if (hasTag("臥底") || hasTag("黑道") || hasTag("懸疑")) {
-            romanceBeat = "【感情：信任危機/猜忌】發現了對方的秘密或謊言，信任感崩塌。感情面臨嚴峻考驗，關係降至冰點。";
         } else {
-            romanceBeat = "【感情：波折/患難/保護與被保護】外部高壓導致的焦慮。可能為了不拖累對方而選擇推開，或是因為受傷而讓對方心痛自責。情緒起伏劇烈。";
+            romanceBeat = "【感情：波折/患難/保護與被保護】外部高壓導致的焦慮。可能為了不拖累對方而選擇推開，或是因為受傷而讓對方心痛自責。";
         }
     } else {
         romanceBeat = "【感情：雨過天晴/修復/昇華】危機解除。解開誤會，修復裂痕。經過考驗的感情比之前更加堅固。";
     }
 
-    // ==========================================
-    // Genre 2: 諜戰黑道 (Noir/Action)
-    // ==========================================
-    if (genre === "諜戰黑道") {
+    // --- 🎭 3. 馬甲(隱藏身分) 通用指令 (Global Identity Arc) ---
+    // 只要有馬甲Tag，所有類型都要執行這套邏輯
+    let identityDirective = "";
+    if (hasSecretIdentity) {
         if (cyclePos <= 10) {
-            phase = "secret_identity";
-            intensity = "medium (tension)";
-            directive = `【階段：雙重身分與偽裝】主角努力扮演表面身分。重點：**極力隱藏身分，捂緊馬甲**。在對象面前差點露餡，靠急智圓謊。`;
-        } else if (cyclePos <= 25) {
-            phase = "suspicion_game";
-            intensity = "high (drama)";
-            directive = `【階段：試探與誤導】對象開始懷疑主角的身分。主角**將計就計**，故意暴露一個「假馬甲」來掩蓋真實意圖。`;
-        } else if (cyclePos <= 35) {
-            phase = "tacit_understanding";
-            intensity = "high (climax)";
-            directive = `【階段：看破不說破 / 極限拉扯】發生重大危機，主角為了救對方不得不使用「核心能力」。對方看在眼裡，**震驚但選擇不當場拆穿**。`;
-        } else {
-            phase = "temporary_peace";
-            intensity = "medium (romance)";
-            directive = `【階段：共同秘密】兩人共享了一個小秘密，關係因此拉近。主角以為瞞過去了，其實對方心裡有數。劇情暫時平穩。`;
+            identityDirective = "【馬甲線】：主角必須小心翼翼地隱藏真實身分/能力 (扮豬吃老虎/臥底/偽裝)。請安排主角在不想暴露的情況下解決問題的橋段。";
+        } else if (cyclePos <= 30) {
+            identityDirective = "【馬甲線】：危機！主角遇到無法用「表面身分」解決的麻煩。請安排一個「差點掉馬」的小插曲（如：無意中使出不該會的技能，或被熟人認出背影）。";
+        } else if (cyclePos <= 38) {
+            identityDirective = "【馬甲線】：身分危機升級！在解決主線高潮時，主角被迫使用了真實能力/身分。請描寫周圍人（尤其是CP）震驚或懷疑的眼神，但主角選擇暫時不解釋或逃離。";
         }
-
-        const finalDirective = `${directive}\n\n**【❤️ 感情線必修題】**：${romanceBeat}\n**【🌍 世界觀層級】**：${scaleInstruction}`;
-        return { phase, intensity, directive: finalDirective, arcName };
     }
 
     // ==========================================
-    // Genre 1: 無限流 (Infinite Flow)
+    // 4. 結構性 Genre 判定 (Skeleton)
     // ==========================================
+
+    // Genre 1: 無限流
     if (genre === "無限流") {
         if (cyclePos <= 5) {
             phase = "setup";
@@ -322,85 +324,65 @@ const determinePlotDirectives = (currentChapterIndex, lastPlotState, genre, tags
         } else {
             phase = "rest";
             intensity = "low (fluff)";
-            directive = "【階段：結算與群像】回到主神空間。清點獎勵。**群像時刻**：展現隊友們的私下生活、配角之間的副CP互動。**兩人在安全區的情感升溫/發糖。**";
+            directive = "【階段：結算與群像】回到主神空間。清點獎勵。**群像時刻**：展現隊友們的私下生活、配角之間的副CP互動。";
             if (cyclePos === ARC_LENGTH) arcName = "準備進入新副本";
         }
-        const finalDirective = `${directive}\n\n**【❤️ 感情線必修題】**：${romanceBeat}\n**【🌍 世界觀層級】**：${scaleInstruction}`;
-        return { phase, intensity, directive: finalDirective, arcName };
     }
-
-    // ==========================================
-    // Genre 3: 修仙玄幻
-    // ==========================================
-    if (genre === "修仙玄幻") {
+    // Genre 2: 諜戰黑道 (針對諜戰特化的邏輯，與通用馬甲線疊加會更強)
+    else if (genre === "諜戰黑道") {
         if (cyclePos <= 10) {
-            phase = "training";
-            directive = `【階段：換地圖與蟄伏】來到更高層次的世界。重點是「積累底牌」和「遭遇輕視」。描寫對力量的渴望。`;
-        } else if (cyclePos <= 32) {
-            phase = "adventure";
-            directive = "【階段：歷練與機緣】外出尋找機緣。遭遇殺人奪寶。重點展現「越級挑戰」能力。**英雄救美/美救英雄情節。**";
-        } else {
-            phase = "breakthrough";
-            directive = "【階段：突破與打臉】修為大漲，強勢回歸！請根據當前劇情安排一個眾人矚目的場合，讓主角一鳴驚人。";
-            if (cyclePos === ARC_LENGTH) arcName = "準備飛升/換地圖";
-        }
-        return { phase, intensity, directive: `${directive}\n\n**【❤️ 感情線必修題】**：${romanceBeat}\n**【🌍 世界觀層級】**：${scaleInstruction}`, arcName };
-    }
-
-    // ==========================================
-    // Genre 4: 末世生存
-    // ==========================================
-    if (genre === "末世生存") {
-        if (cyclePos <= 10) {
-            phase = "new_crisis";
-            directive = `【階段：新危機與遷徙】原據點不再安全。踏上遷徙之路。物資極度匱乏。`;
-        } else if (cyclePos <= 32) {
-            phase = "survival_journey";
-            directive = "【階段：艱難求生】在危機中遭遇人性考驗與屍潮。隊友受傷或犧牲。**患難見真情，確認對方是末世中唯一的依靠。**";
-        } else {
-            phase = "new_base";
-            directive = "【階段：建立新家園】抵達新據點，擊退屍潮。開始建設與防禦。暫時獲得安寧。";
-        }
-        return { phase, intensity, directive: `${directive}\n\n**【❤️ 感情線必修題】**：${romanceBeat}\n**【🌍 世界觀層級】**：${scaleInstruction}`, arcName };
-    }
-
-    // ==========================================
-    // Genre 5: 豪門宮鬥
-    // ==========================================
-    if (genre === "豪門宮鬥") {
-        if (cyclePos <= 10) {
-            phase = "underestimation";
-            directive = `【階段：新局勢佈局】進入新環境。遭遇新反派挑釁，主角按兵不動，暗中佈局。`;
+            phase = "secret_identity";
+            intensity = "medium (tension)";
+            directive = `【階段：潛伏與入局】接獲新任務，進入新組織。建立偽裝，面對試探。更新 plot_state.arcName。`;
         } else if (cyclePos <= 30) {
-            phase = "counter_attack";
-            directive = "【階段：連環反擊】主角收網，揭穿陰謀，當眾打臉。展現權謀手段。**與權勢人物（CP）結盟或利用對方，情感在博弈中升溫。**";
+            phase = "turf_war";
+            intensity = "high (action)";
+            directive = "【階段：上位與火拼】幫派鬥爭激化。街頭追逐、械鬥。展現狠勁獲得信任，同時傳遞情報。";
         } else {
-            phase = "alliance";
-            directive = "【階段：地位晉升】大獲全勝，地位實質提升。收服人心，擴大勢力。";
+            phase = "showdown";
+            intensity = "high (climax)";
+            directive = "【階段：收網與決戰】警方/敵對勢力總攻。在混亂中執行最終任務。結局慘烈。";
         }
-        return { phase, intensity, directive: `${directive}\n\n**【❤️ 感情線必修題】**：${romanceBeat}\n**【🌍 世界觀層級】**：${scaleInstruction}`, arcName };
     }
-
-    // ==========================================
+    // Genre 3: 修仙玄幻
+    else if (genre === "修仙玄幻") {
+        if (cyclePos <= 10) { phase = "training"; directive = `【階段：換地圖與蟄伏】來到更高層次的世界。重點是「積累底牌」和「遭遇輕視」。描寫對力量的渴望。更新 plot_state.arcName。`; }
+        else if (cyclePos <= 32) { phase = "adventure"; directive = "【階段：歷練與機緣】外出尋找機緣。遭遇殺人奪寶。重點展現「越級挑戰」能力。"; }
+        else { phase = "breakthrough"; directive = "【階段：突破與打臉】修為大漲，強勢回歸！請根據當前劇情安排一個眾人矚目的場合，讓主角一鳴驚人。"; if (cyclePos === ARC_LENGTH) arcName = "準備飛升/換地圖"; }
+    }
+    // Genre 4: 末世生存
+    else if (genre === "末世生存") {
+        if (cyclePos <= 10) { phase = "new_crisis"; directive = `【階段：新危機與遷徙】原據點不再安全。踏上遷徙之路。物資極度匱乏。更新 plot_state.arcName。`; }
+        else if (cyclePos <= 32) { phase = "survival_journey"; directive = "【階段：艱難求生】在危機中遭遇人性考驗與屍潮。隊友受傷或犧牲。"; }
+        else { phase = "new_base"; directive = "【階段：建立新家園】抵達新據點，擊退屍潮。開始建設與防禦。暫時獲得安寧。"; }
+    }
+    // Genre 5: 豪門宮鬥
+    else if (genre === "豪門宮鬥") {
+        if (cyclePos <= 10) { phase = "underestimation"; directive = `【階段：新局勢佈局】進入新環境。遭遇新反派挑釁，主角按兵不動，暗中佈局。更新 plot_state.arcName。`; }
+        else if (cyclePos <= 30) { phase = "counter_attack"; directive = "【階段：連環反擊】主角收網，揭穿陰謀，當眾打臉。展現權謀手段。"; }
+        else { phase = "alliance"; directive = "【階段：地位晉升】大獲全勝，地位實質提升。收服人心，擴大勢力。"; }
+    }
     // Genre 6: 都市情緣
-    // ==========================================
-    if (genre === "都市情緣") {
-        if (cyclePos <= 20) {
-            phase = "fluff_interaction";
-            directive = "【階段：日常撒糖/職場互動】重點描寫甜蜜互動、曖昧試探。生活小事中的寵溺感。";
-        } else {
-            phase = "minor_obstacle";
-            directive = "【階段：外部助攻/職場危機】出現小波折，但兩人互相信任解決。感情更進一步。";
-        }
-        return { phase, intensity, directive: `${directive}\n\n**【❤️ 感情線必修題】**：${romanceBeat}\n**【🌍 世界觀層級】**：${scaleInstruction}`, arcName };
+    else if (genre === "都市情緣") {
+        if (cyclePos <= 20) { phase = "fluff_interaction"; directive = "【階段：日常撒糖/職場互動】重點描寫甜蜜互動、曖昧試探。生活小事中的寵溺感。更新 plot_state.arcName。"; }
+        else { phase = "minor_obstacle"; directive = "【階段：外部助攻/職場危機】出現小波折，但兩人互相信任解決。感情更進一步。"; }
+    }
+    // Fallback
+    else {
+        if (cyclePos <= 10) directive = `【階段：新篇章開啟】更新 plot_state.arcName。`;
+        else if (cyclePos <= 30) directive = "【階段：發展與挑戰】";
+        else directive = "【階段：高潮與收尾】";
     }
 
-    // Fallback
-    if (cyclePos <= 10) directive = `【階段：新篇章開啟】`;
-    else if (cyclePos <= 30) directive = "【階段：發展與挑戰】";
-    else directive = "【階段：高潮與收尾】";
+    // 5. 最終組合指令 (Final Assembly)
+    // 將所有圖層疊加：主線 + 馬甲 + 感情 + 世界觀
+    const finalDirective = `
+    ${directive}
+    ${identityDirective ? `\n**【🎭 馬甲線特別指令】**：${identityDirective}` : ""}
+    \n**【❤️ 感情線必修題】**：${romanceBeat}
+    \n**【🌍 世界觀層級】**：${scaleInstruction}`;
 
-    return { phase, intensity, directive: `${directive}\n\n**【❤️ 感情線必修題】**：${romanceBeat}\n**【🌍 世界觀層級】**：${scaleInstruction}`, arcName };
+    return { phase, intensity, directive: finalDirective, arcName };
 };
 
 // ... (generateNextChapter 保持不變) ...
@@ -461,8 +443,7 @@ export const generateNextChapter = async (novelContext, previousContent, charact
         return cleanJson(result.response.text());
 
     } catch (error) {
-        const errStr = error.toString();
-        if (errStr.includes("PROHIBITED") || errStr.includes("Safety") || errStr.includes("400") || errStr.includes("model output must contain")) {
+        if (isGeminiBlockedError(error)) {
             console.log("🚀 Fallback: Gemini blocked. Switching to English Pipeline...");
             try {
                 const englishUserPrompt = `
