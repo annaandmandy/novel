@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { HashRouter, Routes, Route } from 'react-router-dom';
 import Layout from './components/Layout';
 import Home from './pages/Home';
 import Square from './pages/Square';
@@ -11,7 +11,7 @@ import Profile from './pages/Profile';
 
 function App() {
   return (
-    <BrowserRouter>
+    <HashRouter>
       <Routes>
         <Route path="/" element={<Layout />}>
           <Route index element={<Home />} />
@@ -24,7 +24,7 @@ function App() {
         <Route path="/read/:id" element={<Reader />} />
         <Route path="/auth" element={<Auth />} />
       </Routes>
-    </BrowserRouter>
+    </HashRouter>
   );
 }
 
