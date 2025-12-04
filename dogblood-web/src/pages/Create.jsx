@@ -5,7 +5,7 @@ import {
     Infinity, VenetianMask, CloudLightning, Skull, Crown, Heart, Sword, Rocket,
     Zap, Smile, Scale, Moon, Coffee
 } from 'lucide-react';
-import { generateNovelStart, generateRandomSettings, getRecommendedTotalChapters } from '../lib/gemini';
+import { generateRandomSettings, generateNovelStart, ensureDetailedSettings } from '../lib/gemini';
 import { supabase } from '../lib/supabase';
 
 export default function Create() {
@@ -14,8 +14,8 @@ export default function Create() {
     // --- State Management ---
     const [category, setCategory] = useState('BG');
     const [genre, setGenre] = useState('豪門宮鬥');
-    const [pov, setPov] = useState('第三人稱');
-    const [tone, setTone] = useState('爽文');
+    const [pov, setPov] = useState('女主');
+    const [tone, setTone] = useState('一般');
     const [selectedTags, setSelectedTags] = useState([]);
 
     const [settings, setSettings] = useState({
@@ -34,6 +34,8 @@ export default function Create() {
 
     const [designBlueprint, setDesignBlueprint] = useState({});
     const [targetEndingChapter, setTargetEndingChapter] = useState(120);
+    const [useDeepSeek, setUseDeepSeek] = useState(true); // Default to true (DeepSeek)
+    const [lastGeneratedSettings, setLastGeneratedSettings] = useState(null); // To track if user modified settings
 
     const [loading, setLoading] = useState(false);
     const [loadingRandom, setLoadingRandom] = useState(false);
@@ -55,8 +57,8 @@ export default function Create() {
         { id: '第三人稱', label: '第三人稱 (上帝視角)', desc: '宏觀敘事、群像描寫', category: 'ALL' },
         { id: '女主', label: '女主 (BG/大女主)', desc: '細膩情感、成長視角', category: 'BG' },
         { id: '男主', label: '男主 (BG/男頻)', desc: '征服欲、大局觀', category: 'BG' },
-        { id: '主受', label: '主受 (BL)', desc: '心理掙扎、韌性', category: 'BL' },
-        { id: '主攻', label: '主攻 (BL)', desc: '掌控欲、強勢', category: 'BL' },
+        { id: '主受', label: '主受 (BL/GL)', desc: '心理掙扎、韌性', category: 'BL_GL' },
+        { id: '主攻', label: '主攻 (BL/GL)', desc: '掌控欲、強勢', category: 'BL_GL' },
     ];
 
     const TONE_OPTIONS = [
@@ -113,8 +115,8 @@ export default function Create() {
     const handleRandomize = async () => {
         setLoadingRandom(true);
         try {
-            // Updated signature: generateRandomSettings(genre, tags, tone, targetChapterCount, category)
-            const randomSettings = await generateRandomSettings(genre, selectedTags, tone, parseInt(targetEndingChapter), category);
+            // Updated signature: generateRandomSettings(genre, tags, tone, targetChapterCount, category, useDeepSeek)
+            const randomSettings = await generateRandomSettings(genre, selectedTags, tone, parseInt(targetEndingChapter), category, useDeepSeek);
 
             // Separate flat settings for UI and deep profiles for logic
             setSettings({
@@ -133,6 +135,17 @@ export default function Create() {
             if (randomSettings.design_blueprint) {
                 setDesignBlueprint(randomSettings.design_blueprint);
             }
+
+            // Save the exact state of what we generated to compare later
+            setLastGeneratedSettings({
+                title: randomSettings.title,
+                protagonist: randomSettings.protagonist.name,
+                loveInterest: randomSettings.loveInterest.name,
+                trope: randomSettings.trope,
+                summary: randomSettings.summary,
+                // Also track side characters if they exist in blueprint
+                side_characters: randomSettings.design_blueprint?.side_characters
+            });
 
         } catch (error) {
             console.error(error);
@@ -154,16 +167,51 @@ export default function Create() {
             // Construct full settings object with profiles for the AI
             // 1. Generate Content
             // Construct full settings object with profiles for the AI
-            const apiSettings = {
+            let apiSettings = {
                 ...settings,
                 design_blueprint: designBlueprint,
                 protagonist: { name: settings.protagonist, role: '主角', profile: profiles.protagonist },
                 loveInterest: { name: settings.loveInterest, role: '對象/反派', profile: profiles.loveInterest }
             };
 
+            // Check if we need to generate/refresh deep settings (profiles & blueprint)
+            // This happens if:
+            // 1. Profiles/Blueprint are missing (Manual entry from scratch)
+            // 2. User modified key fields (Title, Names, Summary) after generation
+            const isModified = lastGeneratedSettings && (
+                settings.title !== lastGeneratedSettings.title ||
+                settings.protagonist !== lastGeneratedSettings.protagonist ||
+                settings.loveInterest !== lastGeneratedSettings.loveInterest ||
+                settings.summary !== lastGeneratedSettings.summary
+            );
+
+            const needsDeepSettings = !profiles.protagonist?.personality_core || !designBlueprint?.main_goal || isModified;
+
+            if (needsDeepSettings) {
+                console.log("Generating deep settings for manual input...");
+                const detailed = await ensureDetailedSettings(genre, settings, selectedTags, tone, category, useDeepSeek);
+
+                // Update apiSettings with the newly generated deep data
+                apiSettings = {
+                    ...apiSettings,
+                    design_blueprint: detailed.design_blueprint,
+                    protagonist: { ...apiSettings.protagonist, profile: detailed.protagonist.profile, gender: detailed.protagonist.gender },
+                    loveInterest: { ...apiSettings.loveInterest, profile: detailed.loveInterest.profile, gender: detailed.loveInterest.gender }
+                };
+
+                // Also update local state for consistency (optional but good for debugging)
+                setDesignBlueprint(detailed.design_blueprint);
+                setProfiles({
+                    protagonist: { ...detailed.protagonist.profile, gender: detailed.protagonist.gender },
+                    loveInterest: { ...detailed.loveInterest.profile, gender: detailed.loveInterest.gender }
+                });
+            }
+
             // Updated signature: generateNovelStart(genre, settings, tags, tone, pov)
             // Note: We must pass the specific genre (e.g. '無限流') not the category ('BG')
-            const startResponse = await generateNovelStart(genre, apiSettings, selectedTags, tone, pov);
+            // Updated signature: generateNovelStart(genre, settings, tags, tone, pov, useDeepSeek)
+            // Note: We must pass the specific genre (e.g. '無限流') not the category ('BG')
+            const startResponse = await generateNovelStart(genre, apiSettings, selectedTags, tone, pov, useDeepSeek);
             const content = startResponse.content;
             // Note: startResponse.character_updates is also available here if we want to use it dynamically,
             // but for now we use the pre-generated profiles for the main characters.
@@ -176,7 +224,7 @@ export default function Create() {
                     title: settings.title,
                     genre: genre, // Save specific genre (e.g. '無限流') so gemini.js works correctly
                     summary: settings.summary || settings.trope,
-                    settings: { ...settings, tone, pov, category, design_blueprint: designBlueprint }, // Save category and blueprint in settings
+                    settings: { ...settings, tone, pov, category, design_blueprint: designBlueprint, useDeepSeek }, // Save category, blueprint and model preference in settings
                     tags: selectedTags,
                     target_ending_chapter: parseInt(targetEndingChapter) || 120,
                     is_public: false
@@ -363,7 +411,11 @@ export default function Create() {
                             視角 (POV)
                         </h2>
                         <div className="space-y-3">
-                            {POV_OPTIONS.filter(opt => opt.category === 'ALL' || opt.category === category).map((opt) => (
+                            {POV_OPTIONS.filter(opt =>
+                                opt.category === 'ALL' ||
+                                opt.category === category ||
+                                (opt.category === 'BL_GL' && (category === 'BL' || category === 'GL'))
+                            ).map((opt) => (
                                 <button
                                     key={opt.id}
                                     onClick={() => setPov(opt.id)}
@@ -449,6 +501,28 @@ export default function Create() {
                             >
                                 新增
                             </button>
+                        </div>
+                    </div>
+                </section>
+
+                {/* Model Selection Toggle */}
+                <section className="mt-8 p-4 rounded-lg border border-slate-800 bg-slate-900/50">
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <h3 className="text-lg font-medium text-slate-200">AI 模型選擇</h3>
+                            <p className="text-sm text-slate-400">選擇用於生成初始設定與大綱的模型。</p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <span className={`text-sm ${!useDeepSeek ? 'text-blue-400 font-bold' : 'text-slate-500'}`}>Gemini</span>
+                            <button
+                                onClick={() => setUseDeepSeek(!useDeepSeek)}
+                                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${useDeepSeek ? 'bg-purple-600' : 'bg-slate-600'}`}
+                            >
+                                <span
+                                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${useDeepSeek ? 'translate-x-6' : 'translate-x-1'}`}
+                                />
+                            </button>
+                            <span className={`text-sm ${useDeepSeek ? 'text-purple-400 font-bold' : 'text-slate-500'}`}>DeepSeek</span>
                         </div>
                     </div>
                 </section>

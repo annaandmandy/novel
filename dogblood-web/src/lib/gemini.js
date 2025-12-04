@@ -77,16 +77,6 @@ const isGeminiBlockedError = (error) => {
         errStr.includes("400");
 };
 
-// 判斷是否適合使用 DeepSeek (中式題材)
-const isChineseFlavor = (genre, tags = []) => {
-    const safeTags = Array.isArray(tags) ? tags : [];
-    return genre === '修仙玄幻' ||
-        genre === '豪門宮鬥' ||
-        safeTags.includes('中式恐怖') ||
-        safeTags.includes('古風') ||
-        safeTags.includes('盜墓');
-};
-
 const getToneInstruction = (tone) => {
     switch (tone) {
         case "歡脫": return "【基調：幽默沙雕】多用內心吐槽，淡化沈重感，製造反差萌笑點。行文輕快。";
@@ -135,9 +125,13 @@ const formatMemoriesForFallback = (memories, limit = 30) => {
 // --- API Helpers ---
 
 // 統一的 DeepSeek 呼叫函數 (直出中文)
-const callDeepSeek = async (systemPrompt, userPrompt, jsonMode = false) => {
+const callDeepSeek = async (systemPrompt, userPrompt, jsonMode = false, temperature = null) => {
     if (!OPENROUTER_KEY) throw new Error("OpenRouter API Key missing.");
-    console.log(`🇨🇳 Calling DeepSeek V3 (JSON: ${jsonMode})...`);
+    console.log(`Calling DeepSeek V3 (JSON: ${jsonMode})...`);
+
+    // Default temperatures: 0.7 for JSON/Logic, 1.2 for Creative Writing
+    const defaultTemp = jsonMode ? 0.7 : 1.2;
+    const finalTemp = temperature !== null ? temperature : defaultTemp;
 
     try {
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -154,7 +148,7 @@ const callDeepSeek = async (systemPrompt, userPrompt, jsonMode = false) => {
                     { "role": "system", "content": systemPrompt + "\n請務必使用優美的繁體中文撰寫。修辭要符合中式網文習慣。" },
                     { "role": "user", "content": userPrompt }
                 ],
-                "temperature": jsonMode ? 0.7 : 1.2, // 創作時溫度高一點
+                "temperature": finalTemp, // Use custom or default temperature
                 "response_format": jsonMode ? { "type": "json_object" } : undefined,
                 "max_tokens": 8192
             })
@@ -268,9 +262,18 @@ const getGeminiModel = (jsonMode = false) => genAI.getGenerativeModel({
 // 核心 Agent 函數群
 // ==========================================
 
-const planChapter = async (director, blueprint, contextSummary, memories = [], clues = [], genre = "", tags = []) => {
+const planChapter = async (director, blueprint, contextSummary, memories = [], clues = [], genre = "", tags = [], useDeepSeek = true) => {
     const memoryList = formatMemoriesForFallback(memories, 50);
     const clueList = clues.length > 0 ? clues.map(c => `- ${c}`).join('\n') : "目前暫無明確線索";
+
+    // Extract side characters from blueprint if available
+    let sideCharsText = "";
+    try {
+        const bp = typeof blueprint === 'string' ? JSON.parse(blueprint) : blueprint;
+        if (bp && bp.side_characters && Array.isArray(bp.side_characters)) {
+            sideCharsText = bp.side_characters.map(c => `- ${c.name} (${c.role}): ${c.profile}`).join('\n');
+        }
+    } catch (e) { }
 
     const prompt = `
     你是一位小說劇情策劃（Plot Architect）。
@@ -282,7 +285,11 @@ const planChapter = async (director, blueprint, contextSummary, memories = [], c
     ${director.directive}
     
     【設計圖 (終極目標)】
-    ${blueprint}
+    ${typeof blueprint === 'string' ? blueprint : JSON.stringify(blueprint)}
+    
+    【重要配角庫 (Available Cast)】
+    ${sideCharsText || "暫無預設配角，請根據劇情需要創作"}
+    (請判斷本章是否需要上述配角登場，或安排他們在背景行動)
     
     【故事進度 (Story So Far)】
     ${memoryList}
@@ -296,6 +303,10 @@ const planChapter = async (director, blueprint, contextSummary, memories = [], c
     【風格與題材限制 (Genre Consistency)】
     當前題材：${genre}
     風格標籤：${tags.join('、')}
+    **嚴格禁止出現不符合題材的元素**：
+    - 如果是「諜戰黑道/都市/豪門」，嚴禁出現魔法、修仙、系統、神殿、異能等超自然元素。
+    - 如果是「古代/宮鬥」，嚴禁出現現代科技、槍械、網路用語。
+    - 如果是「西方奇幻」，嚴禁出現修仙術語（如金丹、元嬰）。
     
     【任務】
     1. **邏輯推演**：確保劇情發展符合邏輯，伏筆回收自然。
@@ -312,8 +323,8 @@ const planChapter = async (director, blueprint, contextSummary, memories = [], c
     }
     `;
 
-    // 策略：如果是中式題材且有 Key，優先用 DeepSeek 策劃
-    if (OPENROUTER_KEY && isChineseFlavor(genre, tags)) {
+    // 策略：根據 useDeepSeek 決定是否使用 DeepSeek 策劃
+    if (OPENROUTER_KEY && useDeepSeek) {
         try {
             return await callDeepSeek("你是一位專業的小說策劃。", prompt, true);
         } catch (e) {
@@ -376,37 +387,49 @@ const polishContent = async (draft, tone, pov) => {
 // ==========================================
 // 1. 生成初始設定 (中式題材用 DeepSeek，其他用 Gemini)
 // ==========================================
-export const generateRandomSettings = async (genre, tags = [], tone = "一般", targetChapterCount = null, category = "BG") => {
+export const generateRandomSettings = async (genre, tags = [], tone = "一般", targetChapterCount = null, category = "BG", useDeepSeek = true) => {
     const toneDesc = getToneInstruction(tone);
     const styleGuide = `風格標籤：${tags.join('、')}。\n${toneDesc}`;
     const totalChapters = targetChapterCount || getRecommendedTotalChapters(genre);
 
+    // Model Selection Logic:
+    // Directly use the user's choice. Default to true if not provided (backward compatibility).
+    const shouldCallDeepSeek = useDeepSeek;
+
     const prompt = `
-    請為「${genre}」小說生成一套具備爆款潛力的原創設定。
+    請為「${genre}」小說生成一套**極具創意、反套路、具備爆款潛力**的原創設定。
     **類別**：${category}
     **預計篇幅：${totalChapters} 章**。
     ${styleGuide}
     ${ANTI_CLICHE_INSTRUCTIONS}
     
+    【腦力激盪要求 (Brainstorming)】
+    1. **拒絕平庸**：不要給我大眾化的設定。請嘗試「舊瓶裝新酒」或「極致的反差」。
+    2. **核心梗 (Trope)**：必須足夠吸睛，一句話就能讓人想點進去。
+    3. **網文感**：標題要夠「狗血」或「懸疑」，文案要「鉤子」十足。
+    
     【嚴格要求】
     1. **絕對原創**：禁止使用現有知名作品人名。
-    2. **深度人設**：請為主角和核心對象設計完整的「人物冰山檔案」。
-    3. **宏觀設計圖**：請在一開始就規劃好「終極目標」與「世界真相」。
+    2. **純中文姓名**：角色名稱必須是純中文，**嚴禁**在後面加上拼音或英文（例如：嚴禁「林湘 (Lin Xiang)」），這會導致系統錯誤。
+    3. **深度人設**：請為主角和核心對象設計完整的「人物冰山檔案」。
+    4. **宏觀設計圖**：請在一開始就規劃好「終極目標」與「世界真相」。
+    5. **重要配角**：請設計 3-6 位重要配角（死黨、反派手下、競爭對手等），每位需有姓名、身分與一個核心性格標籤。
     
     【回傳 JSON 格式】
     {
       "title": "小說標題",
       "summary": "150-200字的吸睛文案",
       "trope": "核心梗",
-      "design_blueprint": { "main_goal": "...", "world_truth": "...", "ending_vision": "..." },
+      "design_blueprint": { "main_goal": "...", "world_truth": "...", "ending_vision": "...", "side_characters": [{ "name": "...", "role": "...", "profile": "..." }] },
       "protagonist": { "name": "...", "role": "主角", "gender": "男/女/機器/無性別/雙性/流動/未知", "profile": { "appearance": "", "personality_surface": "", "personality_core": "", "biography": "", "trauma": "", "desire": "", "fear": "", "charm_point": "" } },
       "loveInterest": { "name": "...", "role": "攻略對象", "gender": "男/女/機器/無性別/雙性/流動/未知", "profile": { "appearance": "", "personality_surface": "", "personality_core": "", "biography": "", "trauma": "", "desire": "", "fear": "", "charm_point": "" } }
     }
     `;
 
     try {
-        if (OPENROUTER_KEY && isChineseFlavor(genre, tags)) {
-            return await callDeepSeek("你是一位專業的小說架構師。", prompt, true);
+        if (OPENROUTER_KEY && shouldCallDeepSeek) {
+            // Use higher temperature (1.3) for random settings to encourage creativity/randomness
+            return await callDeepSeek("你是一位腦洞大開的頂級網文創意總監。", prompt, true, 0.9);
         } else {
             const model = getGeminiModel(true);
             const result = await model.generateContent(prompt);
@@ -433,9 +456,63 @@ export const generateRandomSettings = async (genre, tags = [], tone = "一般", 
 };
 
 // ==========================================
+// 1.5 補完詳細設定 (當用戶手動輸入或修改後)
+// ==========================================
+export const ensureDetailedSettings = async (genre, simpleSettings, tags = [], tone = "一般", category = "BG", useDeepSeek = true) => {
+    const toneDesc = getToneInstruction(tone);
+    const styleGuide = `風格標籤：${tags.join('、')}。\n${toneDesc}`;
+
+    const prompt = `
+    請根據用戶提供的基礎小說資訊，補完深層設定（人物檔案與世界觀藍圖）。
+    
+    【用戶提供資訊】
+    標題：${simpleSettings.title}
+    文案/梗概：${simpleSettings.summary || simpleSettings.trope}
+    核心梗：${simpleSettings.trope}
+    主角名：${simpleSettings.protagonist}
+    對象名：${simpleSettings.loveInterest}
+    類別：${category}
+    類型：${genre}
+    ${styleGuide}
+    
+    【任務】
+    1. 分析用戶提供的資訊，推導出合理的人物性格與背景。
+    2. 建構完整的「世界觀藍圖」。
+    3. 設計 3-6 位重要配角（死黨、反派手下、競爭對手等），每位需有姓名、身分與一個核心性格標籤。
+    4. **純中文姓名**：所有角色名稱必須是純中文，**嚴禁**在後面加上拼音或英文（例如：嚴禁「林湘 (Lin Xiang)」）。
+    5. 如果用戶未提供某些資訊，請自動補全。
+    
+    【回傳 JSON 格式】
+    {
+      "design_blueprint": { "main_goal": "...", "world_truth": "...", "ending_vision": "...", "side_characters": [{ "name": "...", "role": "...", "profile": "..." }] },
+      "protagonist": { "name": "${simpleSettings.protagonist}", "role": "主角", "gender": "男/女/機器/無性別/雙性/流動/未知", "profile": { "appearance": "", "personality_surface": "", "personality_core": "", "biography": "", "trauma": "", "desire": "", "fear": "", "charm_point": "" } },
+      "loveInterest": { "name": "${simpleSettings.loveInterest}", "role": "攻略對象", "gender": "男/女/機器/無性別/雙性/流動/未知", "profile": { "appearance": "", "personality_surface": "", "personality_core": "", "biography": "", "trauma": "", "desire": "", "fear": "", "charm_point": "" } }
+    }
+    `;
+
+    try {
+        if (OPENROUTER_KEY && useDeepSeek) {
+            return await callDeepSeek("你是一位專業的小說架構師。", prompt, true);
+        } else {
+            const model = getGeminiModel(true);
+            const result = await model.generateContent(prompt);
+            return cleanJson(result.response.text());
+        }
+    } catch (error) {
+        console.error("Failed to ensure detailed settings:", error);
+        // Return minimal fallback to avoid crash
+        return {
+            design_blueprint: {},
+            protagonist: { name: simpleSettings.protagonist, gender: "未知", profile: {} },
+            loveInterest: { name: simpleSettings.loveInterest, gender: "未知", profile: {} }
+        };
+    }
+};
+
+// ==========================================
 // 2. 生成第一章 (中式題材用 DeepSeek，其他用 Gemini)
 // ==========================================
-export const generateNovelStart = async (genre, settings, tags = [], tone = "一般", pov = "女主") => {
+export const generateNovelStart = async (genre, settings, tags = [], tone = "一般", pov = "女主", useDeepSeek = true) => {
     const toneDesc = getToneInstruction(tone);
     const povDesc = getPovInstruction(pov);
     const styleGuide = `類型：${genre}\n風格標籤：${tags.join('、')}。\n${toneDesc}\n${povDesc}`;
@@ -444,36 +521,53 @@ export const generateNovelStart = async (genre, settings, tags = [], tone = "一
     const loveInterestProfile = JSON.stringify(settings.loveInterest.profile);
     const blueprint = JSON.stringify(settings.design_blueprint);
 
-    let extraInstruction = "";
-    if (genre === "無限流") extraInstruction = "第一章重點：主角進入第一個恐怖/無限副本。請描寫周圍同時進入的「一群人」（約10-20人），包括尖叫的新人、冷漠的資深者、以及很快就會死掉的炮灰路人，營造群體恐慌感。**禁止描寫為電腦程式或虛擬世界，強調真實的死亡與血腥。**";
-    else if (genre === "修仙玄幻") extraInstruction = "第一章重點：描寫主角身處的宗門/底層環境。請描寫周圍弟子的嘲笑、底層雜役的眾生相，不要讓場景只有主角一人。";
-    else if (genre === "諜戰黑道") extraInstruction = "第一章重點：主角處於偽裝身分中。請描寫組織內部繁忙的景象、周圍的小弟或路人，展現真實的黑道/職場生態。";
-    else if (genre === "末世生存") extraInstruction = "第一章重點：災難爆發。請描寫混亂奔逃的人群、被咬的路人、堵塞的交通，展現末日的宏大混亂感。";
-    else if (genre === "豪門宮鬥") extraInstruction = "第一章重點：主角遭受陷害。請描寫周圍看熱鬧的群眾、勢利眼的僕人、冷漠的旁觀者。";
-    else if (genre === "都市情緣") extraInstruction = "第一章重點：描寫主角與對象的初次相遇。請描寫周圍環境（酒吧/學校/公司）的熱鬧與路人的反應。";
-    else if (genre === "西方奇幻") extraInstruction = "第一章重點：描寫魔法覺醒儀式的失敗/成功，或是村莊遭遇魔物襲擊。描寫冒險者公會的喧鬧與酒館傳聞。";
-    else if (genre === "星際科幻") extraInstruction = "第一章重點：描寫底層貧民窟的髒亂或軍事學院的森嚴。主角啟動一台廢棄機甲，或接獲危險的星際快遞任務。";
+    // Extract side characters
+    let sideCharsText = "";
+    if (settings.design_blueprint && settings.design_blueprint.side_characters) {
+        sideCharsText = settings.design_blueprint.side_characters.map(c => `- ${c.name} (${c.role}): ${c.profile}`).join('\n');
+    }
 
-    if (tags.includes("規則怪談")) extraInstruction += "\n**【規則怪談】**：請在文中顯眼處（如牆上、紙條）列出本副本的《規則守則》，包含5-8條看似正常但細思極恐的規則，其中包含矛盾或紅字規則。";
-    if (tags.includes("重生")) extraInstruction += " (需描寫前世慘死與重生後的震驚)";
-    if (tags.includes("馬甲")) extraInstruction += " (需強調主角隱藏身分的謹慎)";
-
-    const systemPrompt = `你是一名專業小說家。請撰寫第一章。繁體中文。`;
+    const systemPrompt = `你是一位擅長「黃金三章」的網文大神。你的開篇拒絕套路，擅長用具體的畫面和衝突抓住讀者眼球。`;
     const userPrompt = `
     ${ANTI_CLICHE_INSTRUCTIONS}
-    【小說設定】${settings.title} / ${settings.trope}
-    ${styleGuide}
-    【設計圖】${blueprint}
-    【主角】${settings.protagonist.name}: ${protagonistProfile}
-    【對象】${settings.loveInterest.name}: ${loveInterestProfile}
     
-    【寫作要求】
-    1. **字數**：1500-2000字。
-    2. **黃金開篇**：衝突開場 (In Media Res)，直接切入事件。
-    3. **群像與配角**：請自然引入 1-2 位功能性配角。
-    4. **有意義的衝突**：主角遭遇的麻煩必須阻礙他的核心渴望。
+    【小說資訊】
+    標題：${settings.title}
+    文案：${settings.summary}
+    核心梗：${settings.trope}
+    ${styleGuide}
+    
+    【世界觀藍圖】
+    ${blueprint}
+    
+    【重要配角 (Available Cast)】
+    ${sideCharsText}
+    (請在第一章適度安排 1-2 位配角登場或被提及，增加世界真實感，但不要一次全部塞入)
+
+    【主角】${settings.protagonist.name}
+    ${protagonistProfile}
+    
+    【對象/重要角色】${settings.loveInterest.name}
+    ${loveInterestProfile}
+    
+    【第一章寫作特別指令】
+    1. **拒絕 AI 腔調與爛俗開頭**：
+       - **嚴禁**使用「命運的齒輪開始轉動」、「這是一場遊戲」、「雙面人生」等抽象或中二的開場白。
+       - **嚴禁**開篇大段心理獨白或哲學思考。直接寫「事」，不要寫「理」。
+       - **嚴禁**將文案/摘要直接擴寫成正文。文案是廣告，正文是故事。
+    
+    2. **黃金開篇 (The Hook)**：
+       - **直接切入衝突 (In Media Res)**：不要鋪墊，直接讓主角處於一個具體的麻煩、危機或特殊情境中（例如：正在被追殺、正在婚禮上被悔婚、正在驗屍台前）。
+       - **畫面感 (Cinematic)**：多描寫光影、聲音、氣味、痛覺。讓讀者身臨其境。
+       - **懸念設計**：結尾必須有一個「鉤子」（小高潮或反轉），讓人迫不及待想點開下一章。
+
+    3. **字數與節奏**：
+       - **字數**：3000字以上 (請務必寫長，細節要豐富)。
+       - **慢熱揭露**：如果主角有隱藏身分或金手指，第一章只需「暗示」或「初露端倪」，不要像說明書一樣全盤托出。
+
+    4. **鏡頭**：${pov}。
     5. **代詞規範**：男性用「他」，女性用「她」，動物/怪物用「它」，神/鬼/高維生物用「祂」。
-    6. ${extraInstruction}
+    6. ${settings.extraInstruction || ""}
 
     【回傳 JSON 格式】
     {
@@ -485,8 +579,10 @@ export const generateNovelStart = async (genre, settings, tags = [], tone = "一
     }
     `;
 
+
+
     try {
-        if (OPENROUTER_KEY && isChineseFlavor(genre, tags)) {
+        if (OPENROUTER_KEY && useDeepSeek) {
             return await callDeepSeek(systemPrompt, userPrompt, true);
         } else {
             const model = getGeminiModel(true);
@@ -539,8 +635,8 @@ const determinePlotDirectives = (currentChapterIndex, lastPlotState, genre, tags
     let directive = "";
     let romanceBeat = "";
     let intensity = "medium";
-    let arcName = (cyclePos === 1) ? `第${cycleNum}卷` : (lastPlotState?.arcName || `第${cycleNum}卷`);
-    if (cyclePos === 21) arcName = `第${cycleNum}卷-下`;
+    let arcName = (cyclePos === 1) ? `第${cycleNum} 卷` : (lastPlotState?.arcName || `第${cycleNum} 卷`);
+    if (cyclePos === 21) arcName = `第${cycleNum} 卷 - 下`;
 
     // --- 節奏控制 ---
     const pacingInstruction = isRestPhase
@@ -582,7 +678,7 @@ const determinePlotDirectives = (currentChapterIndex, lastPlotState, genre, tags
         else if (actualTotalChapters - currentChapterIndex <= 10) directive = "【階段：終極決戰 (Climax)】面對最終BOSS。場面宏大。";
         else directive = "【階段：終局前奏 (Setup)】揭開「世界真相」。";
 
-        const finalDirective = `${directive}\n\n**【❤️ 感情線必修題】**：${romanceBeat}\n**【🌍 三幕劇階段】**：${scaleInstruction}`;
+        const finalDirective = `${directive} \n\n **【❤️ 感情線必修題】**：${romanceBeat} \n **【🌍 三幕劇階段】**：${scaleInstruction} `;
         return { phase: "finale", intensity, directive: finalDirective, arcName };
     }
 
@@ -649,9 +745,9 @@ const determinePlotDirectives = (currentChapterIndex, lastPlotState, genre, tags
     const finalDirective = `
     ${directive}
     ${identityDirective ? `\n**【🎭 馬甲線特別指令】**：${identityDirective}` : ""}
-    \n**【❤️ 感情線必修題】**：${romanceBeat}
-    \n**【🌍 三幕劇階段】**：${scaleInstruction}
-    \n${pacingInstruction}`;
+\n **【❤️ 感情線必修題】**：${romanceBeat}
+\n **【🌍 三幕劇階段】**：${scaleInstruction}
+\n${pacingInstruction} `;
 
     return { phase: grandPhase, intensity, directive: finalDirective, arcName };
 };
@@ -664,18 +760,19 @@ export const generateNextChapter = async (novelContext, previousContent, charact
 
     const toneDesc = getToneInstruction(tone);
     const povDesc = getPovInstruction(pov);
-    const styleGuide = `類型：${novelContext.genre} | 風格標籤：${tags.join('、')}。\n${toneDesc}\n${povDesc}`;
+    const styleGuide = `類型：${novelContext.genre} | 風格標籤：${tags.join('、')}。\n${toneDesc} \n${povDesc} `;
     const blueprintStr = JSON.stringify(novelContext.design_blueprint || {});
     const charText = characters.map(c => `- ${c.name} (${c.gender || '未知'}/${c.role}): ${c.description} [狀態: ${c.status}]`).join('\n');
     const memText = formatMemoriesForGemini(memories);
     const prevText = previousContent.slice(-1500);
 
-    // 2. Planner (Logic = DeepSeek if Chinese, else Gemini)
+    // 2. Planner (Logic = DeepSeek if selected, else Gemini)
     console.log("🧠 Planner Agent is working...");
-    const chapterPlan = await planChapter(director, blueprintStr, prevText, memories, clues, novelContext.genre, tags);
+    const useDeepSeek = novelContext.settings?.useDeepSeek ?? true; // Default to true if not set
+    const chapterPlan = await planChapter(director, blueprintStr, prevText, memories, clues, novelContext.genre, tags, useDeepSeek);
 
     const outlineContext = chapterPlan ?
-        `【本章劇情大綱 (必須嚴格執行)】\n標題：${chapterPlan.chapter_title}\n大綱：${chapterPlan.outline}\n關鍵線索操作：${chapterPlan.key_clue_action}\n感情高光：${chapterPlan.romance_moment}` :
+        `【本章劇情大綱(必須嚴格執行)】\n標題：${chapterPlan.chapter_title} \n大綱：${chapterPlan.outline} \n關鍵線索操作：${chapterPlan.key_clue_action} \n感情高光：${chapterPlan.romance_moment} ` :
         "";
 
     const cluesText = clues.length > 0 ? clues.join('\n') : "目前暫無未解線索";
@@ -696,7 +793,7 @@ export const generateNextChapter = async (novelContext, previousContent, charact
     ${outlineContext}
     
     【寫作重點】
-    1. **字數**：1500-2000字 (請務必寫長，細節要豐富)。
+    1. **字數**：3000字以上 (請務必寫長，細節要豐富)。
     2. **嚴格執行大綱**：請完全依照【本章劇情大綱】發展劇情，不要隨意更改核心走向。
     3. **鏡頭規則**：${pov}。鏡頭必須跟隨主角。
     4. **群像**：請描寫配角與路人的反應，增加世界真實感。
@@ -704,21 +801,21 @@ export const generateNextChapter = async (novelContext, previousContent, charact
     6. **代詞規範**：男性用「他」，女性用「她」，動物/怪物用「它」，神/鬼/高維生物用「祂」。
     
     【上下文】
-    記憶：${memText}
-    線索：${cluesText}
-    角色：${charText}
-    前文：${prevText}
+記憶：${memText}
+線索：${cluesText}
+角色：${charText}
+前文：${prevText}
 
     【回傳 JSON】
-    {
-      "content": "小說內文...",
-      "new_memories": ["關鍵事件"],
-      "new_clues": [],
-      "resolved_clues": [],
-      "character_updates": [],
-      "plot_state": { "phase": "${director.phase}", "arcName": "${director.arcName}" }
-    }
-    `;
+{
+    "content": "小說內文...",
+        "new_memories": ["關鍵事件"],
+            "new_clues": [],
+                "resolved_clues": [],
+                    "character_updates": [],
+                        "plot_state": { "phase": "${director.phase}", "arcName": "${director.arcName}" }
+}
+`;
 
     try {
         // 3. Writer (Always Gemini as per request)
@@ -742,12 +839,12 @@ export const generateNextChapter = async (novelContext, previousContent, charact
             try {
                 // Fallback uses Magnum (FALLBACK_MODEL) via pipeline
                 const englishUserPrompt = `
-                Novel: ${novelContext.title}
+Novel: ${novelContext.title}
                 Current Arc: ${director.arcName}
-                DIRECTOR: ${director.directive}
-                POV: ${pov}
-                Context: ${prevText}
-                Task: Write next chapter.
+DIRECTOR: ${director.directive}
+POV: ${pov}
+Context: ${prevText}
+Task: Write next chapter.
                 `;
                 const chineseContent = await callOpenRouterPipeline(baseSystemPrompt, englishUserPrompt, novelContext.genre, tags);
                 return {
