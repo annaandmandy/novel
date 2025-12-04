@@ -38,7 +38,7 @@ export default function Auth() {
     };
 
     return (
-        <div className="min-h-screen flex items-center justify-center p-6 bg-slate-950">
+        <div className="min-h-screen flex items-center justify-center p-6">
             <div className="w-full max-w-md space-y-8">
                 <div className="text-center">
                     <h1 className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-600 mb-2">
