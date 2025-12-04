@@ -86,7 +86,7 @@ export const AuthProvider = ({ children }) => {
         const isNative = Capacitor.isNativePlatform();
         const redirectUrl = isNative
             ? 'dogblood://google-auth'       // 如果是 App (iOS/Android)，用 Deep Link
-            : window.location.origin;        // 如果是網頁，用網頁的網址
+            : window.location.origin + import.meta.env.BASE_URL;        // 如果是網頁，用網頁的網址加上 base path
 
         return supabase.auth.signInWithOAuth({
             provider: 'google',
