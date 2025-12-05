@@ -3,8 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import {
     Dice5, ArrowRight, Sparkles,
     Infinity, VenetianMask, CloudLightning, Skull, Crown, Heart, Sword, Rocket,
-    Zap, Smile, Scale, Moon, Coffee
+    Zap, Smile, Scale, Moon, Coffee, Edit
 } from 'lucide-react';
+import CharacterEditModal from '../components/CharacterEditModal';
 import { generateRandomSettings, generateNovelStart, ensureDetailedSettings } from '../lib/gemini';
 import { supabase } from '../lib/supabase';
 
@@ -51,6 +52,7 @@ export default function Create() {
     const [loading, setLoading] = useState(false);
     const [loadingRandom, setLoadingRandom] = useState(false);
     const [customTag, setCustomTag] = useState('');
+    const [editingCharacter, setEditingCharacter] = useState(null); // 'protagonist' | 'loveInterest' | null
 
     // --- Options Configuration ---
     const GENRE_OPTIONS = [
@@ -172,6 +174,15 @@ export default function Create() {
             alert('隨機生成失敗，請重試。');
         } finally {
             setLoadingRandom(false);
+        }
+    };
+
+    const handleSaveProfile = (newProfile) => {
+        if (editingCharacter) {
+            setProfiles(prev => ({
+                ...prev,
+                [editingCharacter]: newProfile
+            }));
         }
     };
 
@@ -628,23 +639,41 @@ export default function Create() {
                             placeholder="小說標題"
                             className="w-full bg-slate-900 border border-slate-800 rounded-lg px-4 py-3 focus:outline-none focus:border-purple-500 transition-colors text-lg font-bold"
                         />
-                        <div className="grid grid-cols-2 gap-4">
-                            <input
-                                name="protagonist"
-                                value={settings.protagonist}
-                                onChange={handleInputChange}
-                                type="text"
-                                placeholder="主角姓名"
-                                className="w-full bg-slate-900 border border-slate-800 rounded-lg px-4 py-3 focus:outline-none focus:border-purple-500 transition-colors"
-                            />
-                            <input
-                                name="loveInterest"
-                                value={settings.loveInterest}
-                                onChange={handleInputChange}
-                                type="text"
-                                placeholder="對象/反派姓名"
-                                className="w-full bg-slate-900 border border-slate-800 rounded-lg px-4 py-3 focus:outline-none focus:border-purple-500 transition-colors"
-                            />
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="relative">
+                                <input
+                                    name="protagonist"
+                                    value={settings.protagonist}
+                                    onChange={handleInputChange}
+                                    type="text"
+                                    placeholder="主角姓名"
+                                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-4 py-3 pr-12 focus:outline-none focus:border-purple-500 transition-colors"
+                                />
+                                <button
+                                    onClick={() => setEditingCharacter('protagonist')}
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-slate-400 hover:text-purple-400 transition-colors"
+                                    title="編輯詳細人設"
+                                >
+                                    <Edit size={18} />
+                                </button>
+                            </div>
+                            <div className="relative">
+                                <input
+                                    name="loveInterest"
+                                    value={settings.loveInterest}
+                                    onChange={handleInputChange}
+                                    type="text"
+                                    placeholder="對象/反派姓名"
+                                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-4 py-3 pr-12 focus:outline-none focus:border-purple-500 transition-colors"
+                                />
+                                <button
+                                    onClick={() => setEditingCharacter('loveInterest')}
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-slate-400 hover:text-purple-400 transition-colors"
+                                    title="編輯詳細人設"
+                                >
+                                    <Edit size={18} />
+                                </button>
+                            </div>
                         </div>
                         <textarea
                             name="trope"
@@ -696,6 +725,14 @@ export default function Create() {
                     )}
                 </button>
             </div>
+            {/* Character Edit Modal */}
+            <CharacterEditModal
+                isOpen={!!editingCharacter}
+                onClose={() => setEditingCharacter(null)}
+                characterName={editingCharacter === 'protagonist' ? settings.protagonist : settings.loveInterest}
+                profile={editingCharacter ? profiles[editingCharacter] : {}}
+                onSave={handleSaveProfile}
+            />
         </div>
     );
 }

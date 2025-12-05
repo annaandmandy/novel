@@ -1296,6 +1296,27 @@ export default function Reader() {
                                             placeholder="角色的過去經歷..."
                                         />
                                     </div>
+
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="text-xs opacity-70 block mb-1 text-purple-400">說話風格 (Speaking Style)</label>
+                                            <input
+                                                value={charForm.profile?.speaking_style || ''}
+                                                onChange={(e) => setCharForm({ ...charForm, profile: { ...charForm.profile, speaking_style: e.target.value } })}
+                                                className={`w-full bg-transparent border ${theme.border} rounded px-3 py-2 text-xs focus:outline-none focus:border-purple-500`}
+                                                placeholder="文縐縐、粗俗..."
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="text-xs opacity-70 block mb-1 text-purple-400">代表台詞 (Sample Dialogue)</label>
+                                            <input
+                                                value={charForm.profile?.sample_dialogue || ''}
+                                                onChange={(e) => setCharForm({ ...charForm, profile: { ...charForm.profile, sample_dialogue: e.target.value } })}
+                                                className={`w-full bg-transparent border ${theme.border} rounded px-3 py-2 text-xs focus:outline-none focus:border-purple-500`}
+                                                placeholder="一句話代表他..."
+                                            />
+                                        </div>
+                                    </div>
                                 </div>
                             )}
                         </div>
@@ -1312,7 +1333,8 @@ export default function Reader() {
                         </div>
                     </div>
                 </div>
-            )}
-        </div>
+            )
+            }
+        </div >
     );
 }
