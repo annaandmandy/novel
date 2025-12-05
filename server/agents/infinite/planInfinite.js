@@ -199,6 +199,11 @@ export const generateInfiniteSettings = async (tags = [], tone = "一般", targe
     const totalChapters = targetChapterCount || 200;
     const isRuleBased = tags.includes("規則怪談");
 
+    let genderConstraint = "";
+    if (category === "BG") genderConstraint = "主角必須是一男一女 (BG)。";
+    else if (category === "BL") genderConstraint = "主角必須是兩位男性 (BL)。";
+    else if (category === "GL") genderConstraint = "主角必須是兩位女性 (GL)。";
+
     const dungeonRequirement = isRuleBased
         ? "設計【規則怪談】副本。必須包含5-8條詭異的紅藍字規則，以及規則背後的邏輯陷阱。"
         : "設計【生存/動作/解謎】副本。重點在於「主線任務」與「環境威脅」。";
@@ -208,6 +213,7 @@ export const generateInfiniteSettings = async (tags = [], tone = "一般", targe
     你是一位頂級的無限流小說架構師。
     請設計一套驚悚、懸疑但充滿 CP 張力的設定。
     **類別**：${category}。**篇幅**：${totalChapters} 章。
+    **性別要求**：${genderConstraint}
     風格：${tags.join('、')}。\n${toneDesc}
     
     ${INFINITE_ANTI_CLICHE}
