@@ -74,7 +74,7 @@ export default function Profile() {
                 username: formData.username,
                 bio: formData.bio,
                 tags: formData.tags,
-                preferences: formData.preferences,
+                preferences: { ...formData.preferences, language },
                 updated_at: new Date(),
             };
 
