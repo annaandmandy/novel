@@ -1,8 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
-import OpenAI from "openai";
+import { getGeminiModel, cleanJson, callDeepSeek, ANTI_CLICHE_INSTRUCTIONS } from './lib/llm.js';
+import { planInfinite } from './agents/infinite/planInfinite.js';
 
 dotenv.config();
 
@@ -11,72 +11,13 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 const PORT = process.env.PORT || 3000;
-const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
-const SITE_URL = process.env.SITE_URL || "http://localhost:5173";
-const SITE_NAME = "DogBlood AI";
-
-// --- Client Init ---
-const genAI = new GoogleGenerativeAI(GEMINI_KEY);
-const safetySettings = [
-    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-];
-
-const openai = OPENROUTER_KEY ? new OpenAI({
-    baseURL: "https://openrouter.ai/api/v1",
-    apiKey: OPENROUTER_KEY,
-    defaultHeaders: { "HTTP-Referer": SITE_URL, "X-Title": SITE_NAME }
-}) : null;
 
 // --- 模型定義 ---
 const FALLBACK_MODEL = "anthracite-org/magnum-v4-72b";
 const DEEPSEEK_MODEL = "deepseek/deepseek-chat";
-const PLANNER_MODEL = "deepseek/deepseek-chat";
-const EDITOR_MODEL = "deepseek/deepseek-chat";
-
-// --- 🚫 ANTI-CLICHE & STYLE CONTROL (V3.0 嚴格隔離版) ---
-const ANTI_CLICHE_INSTRUCTIONS = `
-【🚫 寫作禁令 (Negative Constraints) - V3.0】
-1. **嚴格題材隔離 (Genre Integrity)**：
-   - **如果題材是「諜戰黑道/都市/豪門」**：嚴禁出現魔法、修仙、系統面板、神殿、異能、妖魔、穿越等超自然元素。這是一個唯物主義的現實世界。
-   - **如果題材是「豪門宮鬥/古代」**：嚴禁出現現代科技（手機、槍械、汽車）、現代網路用語（YYDS、打call、CPU）。
-   - **如果題材是「西方奇幻」**：嚴禁出現東方修仙術語（金丹、元嬰、御劍、道友）。請使用法術位、魔力循環、騎士階級。
-   - **如果題材是「末世生存」**：如果是寫實向，嚴禁出現過於魔幻的修仙技能，應以異能或科技為主。
-
-2. **拒絕 AI 腔調**：
-   - 嚴禁使用「不是...而是...」、「值得一提的是」、「命運的齒輪開始轉動」。拒絕教科書式排比。
-   - 嚴禁在章節結尾進行總結或昇華。
-   - **去重檢查**：嚴禁重複上一章已經寫過的對話或場景。
-
-3. **職業與身分禁令**：
-   - 除非題材是星際/賽博，否則嚴禁設定主角為數據分析師、AI工程師。
-
-4. **世界觀去科技化**：
-   - 魔法/修仙背景嚴禁使用「數據流」、「底層代碼」、「下載/上傳」。請用「靈力」、「神識」。
-
-5. **無限流修正**：
-   - 主神空間是「殘酷的角鬥場」，不是「電腦系統」。副本具有高度隨機性與致命性。
-`;
 
 // --- Utilities ---
-const cleanJson = (text) => {
-    try {
-        let cleaned = text.replace(/```json/g, '').replace(/```/g, '').trim();
-        const firstOpen = cleaned.indexOf('{');
-        const lastClose = cleaned.lastIndexOf('}');
-        if (firstOpen !== -1 && lastClose !== -1) {
-            cleaned = cleaned.substring(firstOpen, lastClose + 1);
-        }
-        return JSON.parse(cleaned);
-    } catch (e) {
-        console.warn("JSON parse failed, returning raw text wrapper...");
-        return null; // Return null to signal failure
-    }
-};
-
 const isGeminiBlockedError = (error) => {
     const errStr = (error.message || error.toString()).toLowerCase();
     return errStr.includes("prohibited") ||
@@ -86,7 +27,7 @@ const isGeminiBlockedError = (error) => {
         errStr.includes("400");
 };
 
-// ... (getToneInstruction, getPovInstruction, getRecommendedTotalChapters 保持不變) ...
+// --- Helper Functions ---
 const getToneInstruction = (tone) => {
     switch (tone) {
         case "歡脫": return "【基調：幽默沙雕】多用內心吐槽，淡化沈重感，製造反差萌笑點。";
@@ -142,61 +83,21 @@ const isChineseFlavor = (genre, tags = []) => {
         safeTags.includes('盜墓');
 };
 
-// ... (callDeepSeek, translateToChinese, callOpenRouterPipeline 保持不變) ...
-const callDeepSeek = async (systemPrompt, userPrompt, jsonMode = false, temperature = null) => {
-    if (!OPENROUTER_KEY) throw new Error("OpenRouter API Key missing.");
-    const defaultTemp = jsonMode ? 0.7 : 1.1;
-    const finalTemp = temperature !== null ? temperature : defaultTemp;
-
-    try {
-        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${OPENROUTER_KEY}`,
-                "HTTP-Referer": SITE_URL,
-                "X-Title": SITE_NAME,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                "model": DEEPSEEK_MODEL,
-                "messages": [
-                    { "role": "system", "content": systemPrompt + "\n請務必使用優美的繁體中文撰寫。" },
-                    { "role": "user", "content": userPrompt }
-                ],
-                "temperature": finalTemp,
-                "response_format": jsonMode ? { "type": "json_object" } : undefined,
-                "max_tokens": 8192
-            })
-        });
-
-        if (!response.ok) {
-            const errText = await response.text();
-            throw new Error(`DeepSeek API Error: ${response.status}`);
-        }
-
-        const data = await response.json();
-        const content = data.choices[0].message.content;
-        if (jsonMode) {
-            const json = cleanJson(content);
-            if (!json) throw new Error("DeepSeek JSON parse failed");
-            return json;
-        }
-        return content;
-    } catch (error) {
-        console.error("DeepSeek Call Failed:", error);
-        throw error;
-    }
-};
-
 const translateToChinese = async (text) => {
     const prompt = `Translate to Traditional Chinese (Taiwanese Novel Style/繁體中文). Maintain tone. Output ONLY translated text.\n\n${text}`;
     try {
+        // Assuming callDeepSeek can handle generic calls or we use fetch directly if callDeepSeek is strictly for DeepSeek model
+        // But here we want to use fallback model for translation usually.
+        // Let's reuse callDeepSeek but force the model if possible or just implement a simple fetch here as before.
+        // To keep it simple and consistent with previous code, I'll reimplement the fetch here using the shared logic if possible,
+        // or just keep the original implementation but using the constants.
+        // Actually, let's just use the original implementation style for now to minimize risk.
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: {
                 "Authorization": `Bearer ${OPENROUTER_KEY}`,
-                "HTTP-Referer": SITE_URL,
-                "X-Title": SITE_NAME,
+                "HTTP-Referer": process.env.SITE_URL || "http://localhost:3000",
+                "X-Title": "DogBlood AI",
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
@@ -233,8 +134,8 @@ const callOpenRouterPipeline = async (systemPrompt, userPrompt, genre, tags = []
             method: "POST",
             headers: {
                 "Authorization": `Bearer ${OPENROUTER_KEY}`,
-                "HTTP-Referer": SITE_URL,
-                "X-Title": SITE_NAME,
+                "HTTP-Referer": process.env.SITE_URL || "http://localhost:3000",
+                "X-Title": "DogBlood AI",
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
@@ -260,12 +161,6 @@ const callOpenRouterPipeline = async (systemPrompt, userPrompt, genre, tags = []
         throw error;
     }
 };
-
-const getGeminiModel = (jsonMode = false) => genAI.getGenerativeModel({
-    model: "gemini-2.5-flash-preview-09-2025",
-    safetySettings: safetySettings,
-    generationConfig: jsonMode ? { responseMimeType: "application/json" } : {},
-});
 
 // ==========================================
 // 🧠 Agent Functions
@@ -330,19 +225,15 @@ const planChapter = async (director, blueprint, contextSummary, memories = [], c
 };
 
 const polishContent = async (draft, tone, pov) => {
-    // ... (Same as previous polishContent) ...
     const model = getGeminiModel(false);
-    const editorPrompt = `你是一位資深的網文主編。請對以下初稿進行【深度潤色】。\n${ANTI_CLICHE_INSTRUCTIONS}\n【潤色目標】去除AI味，增強畫面感，符合${tone}基調。\n[初稿]\n${draft}`;
+    const editorPrompt = `你是一位資深的網文主編。請對以下初稿進行【深度潤色】。\n${ANTI_CLICHE_INSTRUCTIONS}\n【潤色目標】去除AI味，去除冗餘，跟重複劇情，增強畫面感，符合${tone}基調。\n[初稿]\n${draft}`;
     try {
         const result = await model.generateContent(editorPrompt);
         return result.response.text();
     } catch (e) { return draft; }
 };
 
-// ... (generateRandomSettings & generateNovelStart - Same as before, omitted for brevity) ...
-// (請保留原本的 generateRandomSettings 和 generateNovelStart 完整代碼)
 export const generateRandomSettings = async (genre, tags = [], tone = "一般", targetChapterCount = null, category = "BG") => {
-    // ... (Copy previous implementation)
     const model = getGeminiModel(true);
     const toneDesc = getToneInstruction(tone);
     const styleGuide = `風格標籤：${tags.join('、')}。\n${toneDesc}`;
@@ -421,8 +312,7 @@ export const generateNovelStart = async (genre, settings, tags = [], tone = "一
     const blueprint = JSON.stringify(settings.design_blueprint);
 
     let extraInstruction = "";
-    if (genre === "無限流") extraInstruction = "第一章重點：主角進入第一個恐怖/無限副本。請描寫周圍同時進入的「一群人」（約10-20人），包括尖叫的新人、冷漠的資深者、以及很快就會死掉的炮灰路人，營造群體恐慌感。**禁止描寫為電腦程式或虛擬世界，強調真實的死亡與血腥。**";
-    else if (genre === "修仙玄幻") extraInstruction = "第一章重點：描寫主角身處的宗門/底層環境。請描寫周圍弟子的嘲笑、底層雜役的眾生相，不要讓場景只有主角一人。";
+    if (genre === "修仙玄幻") extraInstruction = "第一章重點：描寫主角身處的宗門/底層環境。請描寫周圍弟子的嘲笑、底層雜役的眾生相，不要讓場景只有主角一人。";
     else if (genre === "諜戰黑道") extraInstruction = "第一章重點：主角處於偽裝身分中。請描寫組織內部繁忙的景象、周圍的小弟或路人，展現真實的黑道/職場生態。";
     else if (genre === "末世生存") extraInstruction = "第一章重點：災難爆發。請描寫混亂奔逃的人群、被咬的路人、堵塞的交通，展現末日的宏大混亂感。";
     else if (genre === "豪門宮鬥") extraInstruction = "第一章重點：主角遭受陷害。請描寫周圍看熱鬧的群眾、勢利眼的僕人、冷漠的旁觀者。";
@@ -586,33 +476,76 @@ export const generateNextChapter = async (novelContext, previousContent, charact
 
     // 2. Planner details the chapter AND updates progress
     console.log("🧠 Planner working...");
-    const chapterPlan = await planChapter(director, blueprintStr, prevText, memories, clues, novelContext.genre, tags, useDeepSeek, characters, director.instanceProgress);
+    let chapterPlan;
+    let newPlotState = { ...lastPlotState };
 
-    // Planner 決定本章實際推進了多少進度
-    const progressIncrement = chapterPlan?.suggested_progress_increment || 5;
-    const shouldFinish = chapterPlan?.should_finish_instance || false;
+    if (novelContext.genre === "無限流") {
+        console.log("🌀 Using Infinite Flow Planner...");
+        const infinitePlan = await planInfinite({
+            novelId: novelContext.id, // Pass novelId for DB storage
+            director,
+            blueprint: blueprintStr,
+            contextSummary: prevText,
+            memories,
+            clues,
+            characters,
+            tags,
+            tone,
+            lastPlotState
+        });
 
-    // 更新狀態給前端
-    let newProgress = director.instanceProgress + progressIncrement;
-    let newPhase = director.phase;
-
-    // 根據 Planner 的建議強制轉階段
-    if (shouldFinish && director.phase === 'investigation') {
-        newPhase = 'climax'; // 既然策劃說該完了，那就進高潮
-        newProgress = 80;    // 強制拉高進度
-    } else if (shouldFinish && director.phase === 'climax') {
-        newPhase = 'resolution';
-        newProgress = 100;
-    } else if (newProgress >= 100) {
-        newPhase = 'resolution'; // 自然滿進度
+        chapterPlan = infinitePlan;
+        // 更新狀態
+        if (infinitePlan.plot_state_update) {
+            newPlotState = { ...newPlotState, ...infinitePlan.plot_state_update };
+        }
+    } else {
+        // Standard Planner for other genres
+        console.log("🧠 Standard Planner working...");
+        chapterPlan = await planChapter(director, blueprintStr, prevText, memories, clues, novelContext.genre, tags, useDeepSeek, characters, director.instanceProgress);
+        // Standard updates (phase based on director)
+        newPlotState.phase = director.phase;
+        newPlotState.arcName = director.arcName;
+        newPlotState.instance_progress = director.instanceProgress + (chapterPlan?.suggested_progress_increment || 5);
+        newPlotState.cycle_num = director.cycleNum;
     }
 
+    // --- Writer Logic (Gemini) ---
+    // If Infinite Flow, use specialized writer
+    if (novelContext.genre === "無限流") {
+        try {
+            const writerResult = await writeInfiniteChapter({
+                novelContext,
+                plan: chapterPlan,
+                prevText,
+                tone,
+                pov
+            });
+
+            // 潤色 (Polish)
+            if (writerResult.content && writerResult.content.length > 500) {
+                const polishedContent = await polishContent(writerResult.content, tone, pov);
+                writerResult.content = polishedContent;
+            }
+
+            // Merge writer result with plot state
+            return {
+                ...writerResult,
+                plot_state: newPlotState
+            };
+        } catch (e) {
+            console.error("Infinite Writer Failed:", e);
+            // Fallback to standard writer logic below if specialized writer fails
+        }
+    }
+
+    // Standard Writer Logic (Fallback or Normal)
     const outlineContext = chapterPlan ?
         `【本章大綱】\n標題：${chapterPlan.chapter_title}\n內容：${chapterPlan.outline}\n線索：${chapterPlan.key_clue_action}\n感情：${chapterPlan.romance_moment}` : "";
 
     const geminiUserPrompt = `
     ${ANTI_CLICHE_INSTRUCTIONS}
-    【資訊】${novelContext.title} | ${director.arcName} | ${director.phase} (${newProgress}%)
+    【資訊】${novelContext.title} | ${newPlotState.arcName} | ${newPlotState.phase} (${newPlotState.instance_progress}%)
     【風格】${styleGuide}
     【設計圖】${blueprintStr}
     【導演指令】${director.directive}
@@ -631,10 +564,10 @@ export const generateNextChapter = async (novelContext, previousContent, charact
       "content": "小說內文...",
       "new_memories": [], "new_clues": [], "resolved_clues": [], "character_updates": [],
       "plot_state": { 
-          "phase": "${newPhase}", 
-          "arcName": "${director.arcName}",
-          "instance_progress": ${newProgress},
-          "cycle_num": ${director.cycleNum}
+          "phase": "${newPlotState.phase}", 
+          "arcName": "${newPlotState.arcName}",
+          "instance_progress": ${newPlotState.instance_progress},
+          "cycle_num": ${newPlotState.cycle_num}
       }
     }
     `;
@@ -651,7 +584,7 @@ export const generateNextChapter = async (novelContext, previousContent, charact
 
         // 確保回傳正確的狀態
         if (!jsonResponse.plot_state) {
-            jsonResponse.plot_state = { phase: newPhase, arcName: director.arcName, instance_progress: newProgress, cycle_num: director.cycleNum };
+            jsonResponse.plot_state = newPlotState;
         }
 
         return jsonResponse;
@@ -664,7 +597,7 @@ export const generateNextChapter = async (novelContext, previousContent, charact
                 return {
                     content: content,
                     new_memories: [], character_updates: [],
-                    plot_state: { phase: newPhase, arcName: director.arcName, instance_progress: newProgress, cycle_num: director.cycleNum }
+                    plot_state: newPlotState
                 };
             } catch (e) { throw new Error("系統忙碌"); }
         }
@@ -743,11 +676,20 @@ app.post('/api/refine-character', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+import { generateInfiniteSettings, generateInfiniteStart } from './agents/infinite/planInfinite.js';
+
 app.post('/api/generate-settings', async (req, res) => {
     try {
-        const { genre, tags, tone, targetChapterCount, category } = req.body;
-        const result = await generateRandomSettings(genre, tags, tone, targetChapterCount, category);
-        res.json(result);
+        const { genre, tags, tone, targetChapterCount, category, useDeepSeek } = req.body;
+
+        if (genre === "無限流") {
+            const result = await generateInfiniteSettings(tags, tone, targetChapterCount, category, useDeepSeek);
+            res.json(result);
+        } else {
+            const result = await generateRandomSettings(genre, tags, tone, targetChapterCount, category);
+            res.json(result);
+        }
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -755,31 +697,19 @@ app.post('/api/generate-settings', async (req, res) => {
 
 app.post('/api/generate-start', async (req, res) => {
     try {
-        const { genre, settings, tags, tone, pov } = req.body;
-        const result = await generateNovelStart(genre, settings, tags, tone, pov);
-        res.json(result);
+        const { genre, settings, tags, tone, pov, useDeepSeek } = req.body;
+
+        if (genre === "無限流") {
+            const result = await generateInfiniteStart(settings, tags, tone, pov, useDeepSeek);
+            res.json(result);
+        } else {
+            const result = await generateNovelStart(genre, settings, tags, tone, pov);
+            res.json(result);
+        }
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
-
-// Note: ensureDetailedSettings and refineCharacterProfile functions were not defined in the provided snippet.
-// Assuming they should be imported or defined if used. 
-// For now, I will add placeholders or if they are missing from the file, I should probably define them or remove the route if not needed.
-// However, based on the user's error, generate-settings is definitely missing.
-
-// If ensureDetailedSettings is needed, it needs to be defined. 
-// Looking at previous context, it seems it was there. I will add a basic implementation or check if I missed it.
-// Wait, the user replaced the whole file content and the previous content had comments saying "// ... (Other routes: ...)"
-// This means the user accidentally removed the route definitions when pasting the code.
-
-// I need to restore them. Since I don't have the implementation of ensureDetailedSettings and refineCharacterProfile in the snippet provided by the user,
-// I will assume they are similar to generateRandomSettings or I need to find where they were.
-// Actually, I can see `ensureDetailedSettings` was called in `Create.jsx`.
-// I will add the routes and basic implementations if they are missing from the file.
-
-// Let's add the routes first.
-
 
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
