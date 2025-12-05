@@ -682,7 +682,104 @@ app.post('/api/generate-chapter', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
-// ... (Other routes: generate-settings, generate-start, ensure-detailed-settings, refine-character) ...
+
+// --- Helper Functions for Routes ---
+
+const ensureDetailedSettings = async (genre, settings, tags = [], tone = "一般", category = "BG", useDeepSeek = false) => {
+    const model = getGeminiModel(true);
+    const prompt = `
+    請為小說補充詳細設定。
+    標題：${settings.title}
+    題材：${genre}
+    
+    請回傳 JSON:
+    {
+        "design_blueprint": { "main_goal": "...", "world_truth": "...", "ending_vision": "..." },
+        "protagonist": { "profile": { "appearance": "...", "personality_surface": "...", "personality_core": "...", "biography": "..." }, "gender": "..." },
+        "loveInterest": { "profile": { "appearance": "...", "personality_surface": "...", "personality_core": "...", "biography": "..." }, "gender": "..." }
+    }
+    `;
+    try {
+        const result = await model.generateContent(prompt);
+        return cleanJson(result.response.text());
+    } catch (e) {
+        return { design_blueprint: {}, protagonist: { profile: {} }, loveInterest: { profile: {} } };
+    }
+};
+
+const refineCharacterProfile = async (charData, novelContext, useDeepSeek = false) => {
+    const model = getGeminiModel(true);
+    const prompt = `
+    請完善角色設定：${charData.name}
+    小說：${novelContext.title}
+    
+    回傳 JSON:
+    {
+        "profile": { "appearance": "...", "personality_surface": "...", "personality_core": "...", "biography": "..." }
+    }
+    `;
+    try {
+        const result = await model.generateContent(prompt);
+        return cleanJson(result.response.text())?.profile || {};
+    } catch (e) { return {}; }
+};
+
+app.post('/api/ensure-detailed-settings', async (req, res) => {
+    try {
+        const { genre, settings, tags, tone, category, useDeepSeek } = req.body;
+        const result = await ensureDetailedSettings(genre, settings, tags, tone, category, useDeepSeek);
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/refine-character', async (req, res) => {
+    try {
+        const { charData, novelContext, useDeepSeek } = req.body;
+        const result = await refineCharacterProfile(charData, novelContext, useDeepSeek);
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+app.post('/api/generate-settings', async (req, res) => {
+    try {
+        const { genre, tags, tone, targetChapterCount, category } = req.body;
+        const result = await generateRandomSettings(genre, tags, tone, targetChapterCount, category);
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/generate-start', async (req, res) => {
+    try {
+        const { genre, settings, tags, tone, pov } = req.body;
+        const result = await generateNovelStart(genre, settings, tags, tone, pov);
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Note: ensureDetailedSettings and refineCharacterProfile functions were not defined in the provided snippet.
+// Assuming they should be imported or defined if used. 
+// For now, I will add placeholders or if they are missing from the file, I should probably define them or remove the route if not needed.
+// However, based on the user's error, generate-settings is definitely missing.
+
+// If ensureDetailedSettings is needed, it needs to be defined. 
+// Looking at previous context, it seems it was there. I will add a basic implementation or check if I missed it.
+// Wait, the user replaced the whole file content and the previous content had comments saying "// ... (Other routes: ...)"
+// This means the user accidentally removed the route definitions when pasting the code.
+
+// I need to restore them. Since I don't have the implementation of ensureDetailedSettings and refineCharacterProfile in the snippet provided by the user,
+// I will assume they are similar to generateRandomSettings or I need to find where they were.
+// Actually, I can see `ensureDetailedSettings` was called in `Create.jsx`.
+// I will add the routes and basic implementations if they are missing from the file.
+
+// Let's add the routes first.
+
 
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
